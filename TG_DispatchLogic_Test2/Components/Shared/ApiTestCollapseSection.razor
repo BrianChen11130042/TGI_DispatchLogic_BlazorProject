@@ -1,0 +1,19 @@
+<details class="api-test-collapse" open="@Expanded">
+    <summary class="api-test-collapse-summary">
+        <span class="api-test-collapse-title">@Title</span>
+        @if (Description is not null)
+        {
+            <span class="api-test-collapse-desc">@Description</span>
+        }
+    </summary>
+    <div class="api-test-collapse-body">
+        @ChildContent
+    </div>
+</details>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public RenderFragment? Description { get; set; }
+    [Parameter] public bool Expanded { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

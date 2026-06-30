@@ -1,0 +1,313 @@
+@page "/fleet-monitor"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@inject AmrApiClient AmrApi
+
+<PageTitle>車隊監控</PageTitle>
+
+<div class="page-content fleet-monitor-page">
+    <PageHeader Title="車隊監控"
+                Subtitle="@($"目標：{AmrApi.BaseUrl}　每秒自動更新")">
+        <Actions>
+            <DxButton Text="車控初始化"
+                      RenderStyle="ButtonRenderStyle.Primary"
+                      Click="OnInitializeAsync"
+                      Enabled="@(!_initBusy && _polling)" />
+            @if (_initBusy) { <span class="api-test-hint">派車中…</span> }
+        </Actions>
+    </PageHeader>
+
+    <div class="fleet-monitor-toolbar">
+        <span class="fleet-monitor-status @(_pollError is null ? "ok" : "err")">
+            @if (_pollError is null)
+            {
+                <text>最後更新：@(_lastRefresh?.ToString("HH:mm:ss") ?? "—")　共 @_allVehicles.Count 台</text>
+            }
+            else
+            {
+                <text>更新失敗：@_pollError</text>
+            }
+        </span>
+        @if (!string.IsNullOrEmpty(_initMessage))
+        {
+            <span class="fleet-monitor-init-msg">@_initMessage</span>
+        }
+    </div>
+
+    <ApiTestCollapseSection Title="API 呼叫狀態" Expanded="true">
+        <Description>登入、查詢 WP、派車 MoveToWp、車隊輪詢</Description>
+        <ChildContent>
+            <FleetApiStatusPanel Logs="_apiLogs"
+                                 PollStatus="_pollApiStatus"
+                                 OnClear="ClearApiLogs" />
+        </ChildContent>
+    </ApiTestCollapseSection>
+
+    <section class="fleet-monitor-section">
+        <h2 class="fleet-monitor-section-title">CAKE 車（@_cakeVehicles.Count 台）</h2>
+        <FleetVehicleTable Vehicles="_cakeVehicles" SiteOccupancy="_siteOccupancy" />
+    </section>
+
+    <section class="fleet-monitor-section">
+        <h2 class="fleet-monitor-section-title">BOBBIN 車（@_bobbinVehicles.Count 台）</h2>
+        <FleetVehicleTable Vehicles="_bobbinVehicles" SiteOccupancy="_siteOccupancy" />
+    </section>
+
+    @if (_otherVehicles.Count > 0)
+    {
+        <section class="fleet-monitor-section">
+            <h2 class="fleet-monitor-section-title">其他（@_otherVehicles.Count 台）</h2>
+            <FleetVehicleTable Vehicles="_otherVehicles" SiteOccupancy="_siteOccupancy" />
+        </section>
+    }
+</div>
+
+@code {
+    string? _token;
+    string? _pollError;
+    string? _initMessage;
+    bool _polling;
+    bool _initBusy;
+    DateTime? _lastRefresh;
+    List<FleetStatusDto> _allVehicles = [];
+    List<WmsCellDto> _waitPoints = [];
+    List<FleetApiLogEntry> _apiLogs = [];
+    ApiCallResult? _pollApiStatus;
+    PeriodicTimer? _timer;
+    CancellationTokenSource? _pollCts;
+
+    Dictionary<string, int> _siteOccupancy => _allVehicles
+        .Where(v => !string.IsNullOrWhiteSpace(v.CurrentSite))
+        .GroupBy(v => v.CurrentSite!, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
+    List<FleetStatusDto> _cakeVehicles => _allVehicles
+        .Where(v => FleetParkingPlanner.IsCake(v.RobotId))
+        .OrderBy(v => FleetParkingPlanner.SiteCodeSortKey(v.RobotId))
+        .ThenBy(v => v.RobotId, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    List<FleetStatusDto> _bobbinVehicles => _allVehicles
+        .Where(v => FleetParkingPlanner.IsBobbin(v.RobotId))
+        .OrderBy(v => FleetParkingPlanner.SiteCodeSortKey(v.RobotId))
+        .ThenBy(v => v.RobotId, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    List<FleetStatusDto> _otherVehicles => _allVehicles
+        .Where(v => !FleetParkingPlanner.IsFleetVehicle(v.RobotId))
+        .OrderBy(v => v.RobotId, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _pollCts = new CancellationTokenSource();
+        await EnsureTokenAsync();
+        await LoadWaitPointsAsync(logApi: true);
+        await RefreshFleetAsync();
+        _polling = true;
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        _ = PollLoopAsync(_pollCts.Token);
+    }
+
+    async Task PollLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (_timer is not null && await _timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await RefreshFleetAsync();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    async Task RefreshFleetAsync()
+    {
+        if (!await EnsureTokenAsync()) return;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var (ok, data, error) = await AmrApi.PollFleetStatusAsync(_token!, _pollCts?.Token ?? default);
+        sw.Stop();
+
+        _pollApiStatus = new ApiCallResult(
+            ok,
+            ok ? $"取得 {data.Count} 台車輛" : error ?? "輪詢失敗",
+            ok ? ApiFailureStage.None : ApiFailureStage.ReceiveResponse,
+            $"{AmrApi.BaseUrl.TrimEnd('/')}/v2/fleets/status",
+            "GET",
+            ok ? 200 : 0,
+            sw.ElapsedMilliseconds,
+            [],
+            null);
+
+        if (ok)
+        {
+            _allVehicles = data;
+            _pollError = null;
+            _lastRefresh = DateTime.Now;
+        }
+        else
+        {
+            _pollError = error;
+        }
+    }
+
+    void AddApiLog(string label, ApiCallResult result)
+    {
+        _apiLogs.Insert(0, new FleetApiLogEntry(DateTime.Now, label, result));
+        if (_apiLogs.Count > 80)
+            _apiLogs.RemoveAt(_apiLogs.Count - 1);
+    }
+
+    void ClearApiLogs() => _apiLogs.Clear();
+
+    async Task OnInitializeAsync()
+    {
+        if (!await EnsureTokenAsync()) return;
+
+        _initBusy = true;
+        _initMessage = null;
+        _apiLogs.Clear();
+        StateHasChanged();
+
+        try
+        {
+            await LoadWaitPointsAsync(logApi: true);
+            if (_waitPoints.Count == 0)
+            {
+                _initMessage = "沒有可用的等待點（WP）";
+                return;
+            }
+
+            const int batchSize = FleetParkingPlanner.DefaultBatchSize;
+            const int batchTimeoutSec = 180;
+            const int maxRounds = 50;
+            var okCount = 0;
+            var fails = new List<string>();
+            var enRouteDestinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            for (var round = 1; round <= maxRounds; round++)
+            {
+                await RefreshFleetAsync();
+                await LoadWaitPointsAsync();
+
+                var batch = FleetParkingPlanner.PlanNearestBatch(
+                    _allVehicles, _waitPoints, batchSize, enRouteDestinations);
+                if (batch.Count == 0)
+                {
+                    var eligible = FleetParkingPlanner.CountEligibleVehicles(_allVehicles, _waitPoints);
+                    var freeWp = FleetParkingPlanner.CountFreeWaitPoints(
+                        _allVehicles, _waitPoints, enRouteDestinations);
+                    _initMessage = eligible == 0
+                        ? "無需回 WP 的車輛（皆已在等待點、或仍在任務/移動中）"
+                        : freeWp == 0
+                            ? "無空閒 WP（所有等待點皆有車停放）"
+                            : $"無法配對（待派 {eligible} 台，空閒 WP {freeWp} 個）";
+                    break;
+                }
+
+                var assignment = batch[0];
+                _initMessage = $"第 {round} 台：派送 {assignment.RobotId} → 空閒 {assignment.WaitPointCode}…";
+                await InvokeAsync(StateHasChanged);
+
+                var moveResult = await AmrApi.CreateMoveToWpTaskDiagnosticAsync(
+                    _token!, assignment.RobotId, assignment.WaitPointCode, assignment.AmrType,
+                    _pollCts?.Token ?? default);
+                AddApiLog($"MoveToWp {assignment.RobotId}→{assignment.WaitPointCode}", moveResult);
+
+                if (!moveResult.Success)
+                {
+                    fails.Add($"{assignment.RobotId}→{assignment.WaitPointCode}: {moveResult.Summary}");
+                    continue;
+                }
+
+                okCount++;
+                enRouteDestinations.Add(assignment.WaitPointCode);
+
+                if (!await WaitVehicleParkedAsync(assignment, batchTimeoutSec))
+                {
+                    fails.Add($"{assignment.RobotId}: 等待抵達 {assignment.WaitPointCode} 逾時");
+                    break;
+                }
+
+                enRouteDestinations.Remove(assignment.WaitPointCode);
+            }
+
+            _initMessage = fails.Count == 0
+                ? "已完成回 WP（僅派往無車停放的空閒等待點）"
+                : $"已派送 {okCount} 台，異常 {fails.Count} 筆：{string.Join("；", fails.Take(4))}";
+
+            await RefreshFleetAsync();
+        }
+        finally
+        {
+            _initBusy = false;
+        }
+    }
+
+    async Task<bool> WaitVehicleParkedAsync(FleetParkingAssignment assignment, int timeoutSeconds)
+    {
+        var ct = _pollCts?.Token ?? default;
+        var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            await RefreshFleetAsync();
+
+            var vehicle = _allVehicles.FirstOrDefault(x =>
+                x.RobotId.Equals(assignment.RobotId, StringComparison.OrdinalIgnoreCase));
+
+            if (vehicle is not null
+                && FleetParkingPlanner.HasReachedWaitPoint(vehicle, assignment.WaitPointCode, _waitPoints))
+                return true;
+
+            var stateHint = vehicle is null
+                ? assignment.RobotId
+                : $"{assignment.RobotId}（{vehicle.State} @ {vehicle.CurrentSite ?? "—"}）";
+            _initMessage = $"等待抵達 {assignment.WaitPointCode}：{stateHint}…";
+            await InvokeAsync(StateHasChanged);
+            await Task.Delay(2000, ct);
+        }
+
+        return false;
+    }
+
+    async Task<bool> EnsureTokenAsync()
+    {
+        if (!string.IsNullOrEmpty(_token)) return true;
+
+        var login = await AmrApi.LoginAsync(_pollCts?.Token ?? default);
+        if (login.Success && login.Data is not null)
+        {
+            _token = login.Data.AccessToken;
+            AddApiLog("登入", login);
+            return true;
+        }
+
+        AddApiLog("登入", login);
+
+        _pollError = login.Summary;
+        return false;
+    }
+
+    async Task LoadWaitPointsAsync(bool logApi = false)
+    {
+        if (!await EnsureTokenAsync()) return;
+
+        var wpResult = await AmrApi.GetWaitPointStatusAsync(_token!, _pollCts?.Token ?? default);
+        if (wpResult.Success && wpResult.Data is not null)
+            _waitPoints = wpResult.Data;
+
+        if (logApi)
+            AddApiLog("查詢等待點 WP", wpResult);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _pollCts?.Cancel();
+        _pollCts?.Dispose();
+        _timer?.Dispose();
+        await Task.CompletedTask;
+    }
+}

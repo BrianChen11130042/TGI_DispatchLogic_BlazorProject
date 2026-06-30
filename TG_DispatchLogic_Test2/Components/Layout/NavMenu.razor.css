@@ -1,0 +1,89 @@
+﻿#sidebar {
+    min-width: 15rem;
+    max-width: 15rem;
+    height: 100%;
+    display: block;
+    background: inherit;
+}
+
+.nav-section-label {
+    padding: 0 1.25rem 0.75rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: rgba(255, 255, 255, 0.45);
+}
+
+::deep .menu {
+    background-color: inherit;
+}
+
+::deep .menu .dxbl-menu-item-list {
+    gap: 0.15rem;
+}
+
+::deep .menu-item {
+    color: rgba(255, 255, 255, 0.88);
+    border-radius: 6px;
+    margin: 0 0.5rem;
+}
+
+::deep .menu-item.dxbl-menu-item-selected {
+    background: rgba(79, 195, 247, 0.12);
+    color: #fff;
+}
+
+::deep .menu-item:hover {
+    background: rgba(255, 255, 255, 0.07);
+}
+
+::deep .nav-menu-icon {
+    width: 1.125rem;
+    height: 1.125rem;
+    min-width: 1.125rem;
+    margin-left: 0.5rem;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+    opacity: 0.92;
+}
+
+::deep .menu-item.dxbl-menu-item-selected .nav-menu-icon {
+    opacity: 1;
+}
+
+::deep .nav-icon-home {
+    background-image: url("images/nav/home.svg");
+}
+
+::deep .nav-icon-buffer {
+    background-image: url("images/nav/buffer.svg");
+}
+
+::deep .nav-icon-vehicle {
+    background-image: url("images/nav/vehicle.svg");
+}
+
+::deep .nav-icon-dispatch {
+    background-image: url("images/nav/dispatch.svg");
+}
+
+::deep .nav-icon-monitor {
+    background-image: url("images/nav/monitor.svg");
+}
+
+::deep .nav-icon-api {
+    background-image: url("images/nav/api.svg");
+}
+
+::deep .nav-icon-spinning {
+    background-image: url("images/nav/spinning.svg");
+}
+
+@media (max-width: 768px) {
+    #sidebar {
+        min-width: inherit;
+        max-width: inherit;
+    }
+}

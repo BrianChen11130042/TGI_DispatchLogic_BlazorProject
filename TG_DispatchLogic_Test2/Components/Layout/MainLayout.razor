@@ -1,0 +1,46 @@
+﻿@inherits LayoutComponentBase
+@inject NavigationManager NavigationManager
+
+<div class="page">
+    <Drawer DrawerHeader="drawerHeader" DrawerFooter="drawerFooter">
+        <DrawerBody>
+            <div class="w-100">
+                <NavMenu></NavMenu>
+            </div>
+        </DrawerBody>
+        <DrawerTarget>
+            <div class="nav-buttons-container">
+                <NavLink href="@UrlGenerator.GetUrl(new Uri(NavigationManager.Uri).LocalPath, !ToggledSidebar)">
+                    <DxButton RenderStyle="@ButtonRenderStyle.Secondary" RenderStyleMode="@ButtonRenderStyleMode.Text" CssClass="menu-button" IconCssClass="icon icon-menu"></DxButton>
+                </NavLink>
+                @if (new Uri(NavigationManager.Uri).LocalPath != "/") {
+                    <NavLink href="@UrlGenerator.GetUrl("/", ToggledSidebar)" class="button-link">
+                        <DxButton RenderStyle="@ButtonRenderStyle.Secondary" Text="回首頁" RenderStyleMode="@ButtonRenderStyleMode.Text" CssClass="menu-button-nav" IconCssClass="icon icon-back"></DxButton>
+                    </NavLink>
+                }
+            </div>
+            <div class="content-area">
+                @Body
+            </div>
+        </DrawerTarget>
+    </Drawer>
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = UrlGenerator.ToggleSidebarName)]
+    public bool ToggledSidebar { get; set; }
+
+    private RenderFragment drawerHeader => @<div class="navigation-drawer-header">
+        <div class="app-brand">
+            <div class="app-brand-title">派車邏輯</div>
+            <div class="app-brand-sub">TG Dispatch</div>
+        </div>
+        <NavLink href="@UrlGenerator.GetUrl(new Uri(NavigationManager.Uri).LocalPath, !ToggledSidebar)">
+            <DxButton RenderStyle="@ButtonRenderStyle.Light" RenderStyleMode="@ButtonRenderStyleMode.Text" CssClass="menu-button-nav" IconCssClass="@(ToggledSidebar ? "icon icon-close" : "icon icon-menu")"></DxButton>
+        </NavLink>
+    </div>;
+
+    private RenderFragment drawerFooter => @<div class="drawer-footer-text">
+        TG Dispatch
+    </div>;
+}

@@ -1,0 +1,61 @@
+<section class="fleet-api-status">
+    @if (PollStatus is not null)
+    {
+        <div class="fleet-api-poll-banner @(PollStatus.Success ? "ok" : "err")">
+            <span class="fleet-api-poll-label">輪詢</span>
+            <code>@PollStatus.HttpMethod @ShortPath(PollStatus.RequestUrl)</code>
+            <span>— @(PollStatus.Success ? "成功" : "失敗")：@PollStatus.Summary</span>
+            @if (PollStatus.HttpStatusCode > 0)
+            {
+                <span class="fleet-api-poll-meta">HTTP @PollStatus.HttpStatusCode · @PollStatus.ElapsedMs ms</span>
+            }
+        </div>
+    }
+
+    @if (Logs.Count == 0)
+    {
+        <p class="api-test-hint">尚無 API 呼叫紀錄（登入、查詢 WP、派 MoveToWp 等會顯示於此）</p>
+    }
+    else
+    {
+        <div class="fleet-api-log-list">
+            @foreach (var log in Logs)
+            {
+                <details class="fleet-api-log-item @(log.Result.Success ? "ok" : "err")">
+                    <summary class="fleet-api-log-summary">
+                        <span class="fleet-api-log-time">@log.Time.ToString("HH:mm:ss")</span>
+                        <span class="fleet-api-log-badge">@(log.Result.Success ? "成功" : "失敗")</span>
+                        <span class="fleet-api-log-label">@log.Label</span>
+                        <code class="fleet-api-log-api">@log.Result.HttpMethod @ShortPath(log.Result.RequestUrl)</code>
+                        <span class="fleet-api-log-summary-text">@log.Result.Summary</span>
+                    </summary>
+                    <div class="fleet-api-log-detail">
+                        <ApiDiagnosticPanel Result="log.Result" />
+                    </div>
+                </details>
+            }
+        </div>
+    }
+
+    @if (Logs.Count > 0)
+    {
+        <DxButton Text="清除 API 紀錄"
+                  RenderStyle="ButtonRenderStyle.Light"
+                  RenderStyleMode="ButtonRenderStyleMode.Text"
+                  Click="OnClear" />
+    }
+</section>
+
+@code {
+    [Parameter] public IReadOnlyList<FleetApiLogEntry> Logs { get; set; } = [];
+    [Parameter] public ApiCallResult? PollStatus { get; set; }
+    [Parameter] public EventCallback OnClear { get; set; }
+
+    static string ShortPath(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return "";
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return uri.PathAndQuery.TrimStart('/');
+        return url;
+    }
+}

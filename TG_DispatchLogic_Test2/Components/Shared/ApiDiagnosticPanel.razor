@@ -1,0 +1,57 @@
+@using TG_DispatchLogic_Test2.Models
+@namespace TG_DispatchLogic_Test2.Components.Shared
+
+@if (Result is not null)
+{
+    <div class="api-test-result @(Result.Success ? "api-test-result--ok" : "api-test-result--err")">
+        <div class="api-test-summary">
+            <strong>@(Result.Success ? "成功" : "失敗")：@Result.Summary</strong>
+        </div>
+
+        <dl class="api-test-meta">
+            <dt>完整 URL</dt>
+            <dd><code>@Result.HttpMethod @Result.RequestUrl</code></dd>
+            <dt>HTTP 狀態</dt>
+            <dd>@(Result.HttpStatusCode > 0 ? Result.HttpStatusCode.ToString() : "（未取得）")</dd>
+            <dt>耗時</dt>
+            <dd>@Result.ElapsedMs ms</dd>
+            @if (!Result.Success)
+            {
+                <dt>失敗階段</dt>
+                <dd class="api-test-stage">@Result.FailureStageLabel</dd>
+            }
+        </dl>
+
+        @if (ExtraContent is not null)
+        {
+            <div class="api-test-extra">@ExtraContent</div>
+        }
+
+        <div class="api-test-steps">
+            <div class="api-test-steps-title">執行步驟</div>
+            <ul>
+                @foreach (var step in Result.Steps)
+                {
+                    <li class="@(step.Ok ? "api-step--ok" : "api-step--err")">
+                        <span class="api-step-icon">@(step.Ok ? "✓" : "✗")</span>
+                        <span class="api-step-phase">@step.Phase</span>
+                        <span class="api-step-detail">@step.Detail</span>
+                    </li>
+                }
+            </ul>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(Result.ResponseBody))
+        {
+            <div class="api-test-body">
+                <div class="api-test-steps-title">回應 Body</div>
+                <pre>@Result.ResponseBody</pre>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public ApiCallResult? Result { get; set; }
+    [Parameter] public RenderFragment? ExtraContent { get; set; }
+}

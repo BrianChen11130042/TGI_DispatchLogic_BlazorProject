@@ -1,0 +1,61 @@
+@if (Vehicles.Count == 0)
+{
+    <p class="api-test-hint">目前無車輛資料</p>
+}
+else
+{
+    <div class="fleet-table-wrap">
+        <table class="fleet-table fleet-monitor-table">
+            <thead>
+                <tr>
+                    <th>車號</th>
+                    <th>狀態</th>
+                    <th>連線</th>
+                    <th>電量</th>
+                    <th>目前站點</th>
+                    <th>載貨</th>
+                    <th>任務</th>
+                    <th>X</th>
+                    <th>Y</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var v in Vehicles)
+                {
+                    var rowClass = GetRowClass(v);
+                    <tr class="@rowClass">
+                        <td><strong>@v.RobotId</strong></td>
+                        <td>@v.State</td>
+                        <td>@v.ConnectionStatus</td>
+                        <td>@v.Battery%</td>
+                        <td>@(v.CurrentSite ?? "—")</td>
+                        <td>@(v.CarryingMaterial ? "是" : "否")</td>
+                        <td>@(v.CurrentTaskId ?? "—")</td>
+                        <td>@v.X.ToString("0.##")</td>
+                        <td>@v.Y.ToString("0.##")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<FleetStatusDto> Vehicles { get; set; } = [];
+    [Parameter] public IReadOnlyDictionary<string, int>? SiteOccupancy { get; set; }
+
+    string? GetRowClass(FleetStatusDto v)
+    {
+        if (!string.IsNullOrEmpty(v.CurrentTaskId))
+            return "row-busy";
+
+        if (!string.IsNullOrEmpty(v.CurrentSite)
+            && SiteOccupancy is not null
+            && SiteOccupancy.TryGetValue(v.CurrentSite, out var count)
+            && count > 1
+            && v.CurrentSite.StartsWith("WP", StringComparison.OrdinalIgnoreCase))
+            return "row-crowded";
+
+        return null;
+    }
+}

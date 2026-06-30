@@ -1,0 +1,653 @@
+@page "/api-test"
+@rendermode InteractiveServer
+@inject AmrApiClient AmrApi
+@using TG_DispatchLogic_Test2.Services
+
+<PageTitle>API 測試</PageTitle>
+
+<div class="page-content api-test-page">
+    <PageHeader Title="API 測試"
+                Subtitle="@($"目標：{AmrApi.BaseUrl}")" />
+
+    @if (!string.IsNullOrEmpty(_token))
+    {
+        <div class="api-token-banner">
+            <span>目前 Token</span>
+            <code>@MaskToken(_token)</code>
+            <DxButton Text="清除 Token"
+                      RenderStyle="ButtonRenderStyle.Light"
+                      RenderStyleMode="ButtonRenderStyleMode.Text"
+                      Click="ClearToken" />
+        </div>
+    }
+
+    <ApiTestCollapseSection Title="1. 登入" Expanded="true">
+        <Description><code>POST /login/access-token</code></Description>
+        <ChildContent>
+            <DxButton Text="測試登入"
+                      RenderStyle="ButtonRenderStyle.Primary"
+                      Click="OnLoginAsync"
+                      Enabled="@(!_loginBusy)" />
+            @if (_loginBusy) { <span class="api-test-hint">連線中…</span> }
+            <ApiDiagnosticPanel Result="_loginResult">
+                <ExtraContent>
+                    @if (_loginResult?.Success == true && _loginResult.Data is not null)
+                    {
+                        <div class="api-test-token">
+                            <span>access_token（完整）</span>
+                            <code>@_loginResult.Data.AccessToken</code>
+                        </div>
+                    }
+                </ExtraContent>
+            </ApiDiagnosticPanel>
+        </ChildContent>
+    </ApiTestCollapseSection>
+
+    <ApiTestCollapseSection Title="2. 車隊狀態">
+        <Description><code>GET /v2/fleets/status</code> — 所有 AMR 位置、電量、任務</Description>
+        <ChildContent>
+            <DxButton Text="查詢車隊"
+                      RenderStyle="ButtonRenderStyle.Secondary"
+                      Click="OnFleetAsync"
+                      Enabled="@(!_fleetBusy)" />
+            @if (_fleetBusy) { <span class="api-test-hint">查詢中…</span> }
+            <ApiDiagnosticPanel Result="_fleetResult">
+                <ExtraContent>
+                    @if (_fleetResult?.Success == true && _fleetResult.Data?.Count > 0)
+                    {
+                        <div class="fleet-table-wrap">
+                            <table class="fleet-table">
+                                <thead>
+                                    <tr>
+                                        <th>車號</th>
+                                        <th>狀態</th>
+                                        <th>連線</th>
+                                        <th>電量</th>
+                                        <th>站點</th>
+                                        <th>載貨</th>
+                                        <th>任務</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var v in _fleetResult.Data)
+                                    {
+                                        <tr>
+                                            <td><strong>@v.RobotId</strong></td>
+                                            <td>@v.State</td>
+                                            <td>@v.ConnectionStatus</td>
+                                            <td>@v.Battery%</td>
+                                            <td>@(v.CurrentSite ?? "—")</td>
+                                            <td>@(v.CarryingMaterial ? "是" : "否")</td>
+                                            <td>@(v.CurrentTaskId ?? "—")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </ExtraContent>
+            </ApiDiagnosticPanel>
+        </ChildContent>
+    </ApiTestCollapseSection>
+
+    <ApiTestCollapseSection Title="3. 機器人狀態">
+        <Description><code>GET /v2/robots/status</code> — 所有機器人詳細狀態</Description>
+        <ChildContent>
+            <DxButton Text="查詢機器人"
+                      RenderStyle="ButtonRenderStyle.Secondary"
+                      Click="OnRobotsAsync"
+                      Enabled="@(!_robotsBusy)" />
+            @if (_robotsBusy) { <span class="api-test-hint">查詢中…</span> }
+            <ApiDiagnosticPanel Result="_robotsResult">
+                <ExtraContent>
+                    @if (_robotsResult?.Success == true && _robotsResult.Data?.Count > 0)
+                    {
+                        <div class="fleet-table-wrap">
+                            <table class="fleet-table">
+                                <thead>
+                                    <tr>
+                                        <th>車號</th>
+                                        <th>狀態</th>
+                                        <th>連線</th>
+                                        <th>電量</th>
+                                        <th>載貨</th>
+                                        <th>目前站點 ID</th>
+                                        <th>目標站點 ID</th>
+                                        <th>任務</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var v in _robotsResult.Data)
+                                    {
+                                        <tr>
+                                            <td><strong>@v.RobotId</strong></td>
+                                            <td>@v.State</td>
+                                            <td>@v.ConnectionStatus</td>
+                                            <td>@v.Battery%</td>
+                                            <td>@(v.CarryingMaterial ? "是" : "否")</td>
+                                            <td>@(v.CurrentSiteId?.ToString() ?? "—")</td>
+                                            <td>@(v.TargetSiteId?.ToString() ?? "—")</td>
+                                            <td>@(v.CurrentTaskId ?? "—")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </ExtraContent>
+            </ApiDiagnosticPanel>
+        </ChildContent>
+    </ApiTestCollapseSection>
+
+    <ApiTestCollapseSection Title="4. Buffer 備料站">
+        <Description><code>GET /v2/wms</code> — 篩選 <code>cell_type=Buffer</code></Description>
+        <ChildContent>
+            <DxButton Text="查詢備料站"
+                      RenderStyle="ButtonRenderStyle.Secondary"
+                      Click="OnBufferAsync"
+                      Enabled="@(!_bufferBusy)" />
+            @if (_bufferBusy) { <span class="api-test-hint">查詢中…</span> }
+            <ApiDiagnosticPanel Result="_bufferResult">
+                <ExtraContent>
+                    @if (_bufferResult?.Success == true && _bufferResult.Data?.Count > 0)
+                    {
+                        <div class="fleet-table-wrap">
+                            <table class="fleet-table">
+                                <thead>
+                                    <tr>
+                                        <th>站點</th>
+                                        <th>名稱</th>
+                                        <th>群組</th>
+                                        <th>物料</th>
+                                        <th>容量</th>
+                                        <th>有料</th>
+                                        <th>占用</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var b in _bufferResult.Data.OrderBy(x => x.CellId))
+                                    {
+                                        <tr class="@(b.MaterialCount >= b.Capacity && b.Capacity > 0 ? "row-full" : null)">
+                                            <td><strong>@b.CellId</strong></td>
+                                            <td>@b.CellName</td>
+                                            <td>@(string.IsNullOrEmpty(b.SiteGroup) ? "—" : b.SiteGroup)</td>
+                                            <td>@b.MaterialCount</td>
+                                            <td>@b.Capacity</td>
+                                            <td>@(b.HasLoad ? "是" : "否")</td>
+                                            <td>@(b.Occupied ? "是" : "否")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else if (_bufferResult?.Success == true)
+                    {
+                        <p class="api-test-hint">目前無 Buffer 備料站資料。</p>
+                    }
+                </ExtraContent>
+            </ApiDiagnosticPanel>
+        </ChildContent>
+    </ApiTestCollapseSection>
+
+    <ApiTestCollapseSection Title="5. Wait Point 等待點">
+        <Description><code>GET /v2/wms</code> — 篩選 <code>cell_type=Waiting</code> 或 WP 代碼</Description>
+        <ChildContent>
+            <DxButton Text="查詢等待點"
+                      RenderStyle="ButtonRenderStyle.Secondary"
+                      Click="OnWaitPointAsync"
+                      Enabled="@(!_waitPointBusy)" />
+            @if (_waitPointBusy) { <span class="api-test-hint">查詢中…</span> }
+            <ApiDiagnosticPanel Result="_waitPointResult">
+                <ExtraContent>
+                    @if (_waitPointResult?.Success == true && _waitPointResult.Data?.Count > 0)
+                    {
+                        <div class="fleet-table-wrap">
+                            <table class="fleet-table">
+                                <thead>
+                                    <tr>
+                                        <th>站點</th>
+                                        <th>名稱</th>
+                                        <th>類型</th>
+                                        <th>群組</th>
+                                        <th>占用</th>
+                                        <th>X%</th>
+                                        <th>Y%</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var w in _waitPointResult.Data.OrderBy(x => x.CellId))
+                                    {
+                                        <tr class="@(w.Occupied ? "row-occupied" : null)">
+                                            <td><strong>@w.CellId</strong></td>
+                                            <td>@w.CellName</td>
+                                            <td>@w.CellType</td>
+                                            <td>@(string.IsNullOrEmpty(w.SiteGroup) ? "—" : w.SiteGroup)</td>
+                                            <td>@(w.Occupied ? "是" : "否")</td>
+                                            <td>@w.XPercent.ToString("0.##")</td>
+                                            <td>@w.YPercent.ToString("0.##")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else if (_waitPointResult?.Success == true)
+                    {
+                        <p class="api-test-hint">目前無 Wait Point 等待點資料。</p>
+                    }
+                </ExtraContent>
+            </ApiDiagnosticPanel>
+        </ChildContent>
+    </ApiTestCollapseSection>
+
+    <ApiTestCollapseSection Title="6. 單動移車測試" Expanded="true">
+        <Description>
+            <code>POST /api/simulation/tasks</code> — 車從<strong>目前位置</strong>純移動（不取料、不送 TWP）
+        </Description>
+        <ChildContent>
+            <div class="api-test-form">
+                <DxButton Text="載入車輛與站點"
+                          RenderStyle="ButtonRenderStyle.Secondary"
+                          Click="OnLoadDispatchOptionsAsync"
+                          Enabled="@(!_dispatchOptionsBusy)" />
+                @if (_dispatchOptionsBusy) { <span class="api-test-hint">載入中…</span> }
+                @if (_dispatchOptionsLoaded)
+                {
+                    <span class="api-test-hint">@_dispatchFleet.Count 台車、@_dispatchSites.Count 個站點</span>
+                }
+
+                <div class="api-test-row">
+                    <label class="api-test-label" for="dispatch-task-kind">任務種類</label>
+                    <select id="dispatch-task-kind" class="api-test-select"
+                            @bind="_dispatchTaskKind" @bind:after="OnDispatchTaskKindChanged">
+                        @foreach (var kind in SimulationTaskTestHelper.TaskKinds)
+                        {
+                            <option value="@kind.Value">@kind.Label</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="api-test-row">
+                    <label class="api-test-label" for="dispatch-robot">指定車輛</label>
+                    <select id="dispatch-robot" class="api-test-select"
+                            @bind="_dispatchRobotId" @bind:after="OnDispatchRobotChanged">
+                        <option value="">— 請先載入 —</option>
+                        @foreach (var v in DispatchFleetRobots)
+                        {
+                            <option value="@v.RobotId">@FormatRobotOption(v)</option>
+                        }
+                    </select>
+                </div>
+
+                @if (!string.IsNullOrEmpty(_dispatchRobotId))
+                {
+                    <p class="api-test-hint">車種：@_dispatchAmrType（依車號自動帶入）</p>
+                }
+
+                @if (_dispatchTask?.IsCompositeFlow == true && _dispatchTask.Value == "MoveToNearestWp")
+                {
+                    <p class="api-test-hint">
+                        依車輛目前位置找最近空閒 WP，送出 <code>MoveToWp</code>。
+                    </p>
+                }
+                else if (_dispatchTask?.NeedsTargetSite == true)
+                {
+                    <div class="api-test-row">
+                        <label class="api-test-label" for="dispatch-target">@DispatchTargetSiteLabel</label>
+                        <select id="dispatch-target" class="api-test-select" @bind="_dispatchTargetSite">
+                            <option value="">— 請選擇 —</option>
+                            @foreach (var site in DispatchTargetSites)
+                            {
+                                <option value="@site.CellId">@FormatSiteOption(site)</option>
+                            }
+                        </select>
+                    </div>
+                    @if (_dispatchTask.Value == "MoveToBuffer")
+                    {
+                        <p class="api-test-hint">
+                            僅限 <strong>CAKE</strong> 車。移動至 BUFFER 後等待 3 秒，再自動回最近空閒 WP。
+                        </p>
+                    }
+                    else if (_dispatchTask.Value == "MoveToTwp")
+                    {
+                        <p class="api-test-hint">
+                            <strong>CAKE / BOBBIN</strong> 皆可。移動至 TWP 後等待 3 秒，再自動回最近空閒 WP。
+                        </p>
+                    }
+                    else if (_dispatchTask.Value == "MoveToClr")
+                    {
+                        <p class="api-test-hint">
+                            僅限 <strong>CAKE</strong> 車。移動至 CLR 後等待 3 秒，再自動回最近空閒 WP。
+                        </p>
+                    }
+                    else if (_dispatchTask.Value == "MoveToPkg")
+                    {
+                        <p class="api-test-hint">
+                            僅限 <strong>BOBBIN</strong> 車。移動至 AOI 包裝站（PKG）後等待 3 秒，再自動回最近空閒 WP。
+                        </p>
+                    }
+                }
+
+                <DxButton Text="送出派車"
+                          RenderStyle="ButtonRenderStyle.Primary"
+                          Click="OnDispatchAsync"
+                          Enabled="@(!_dispatchBusy && _dispatchOptionsLoaded)" />
+                @if (_dispatchBusy)
+                {
+                    <span class="api-test-hint">@(_dispatchProgress ?? "派車中…")</span>
+                }
+
+                <ApiDiagnosticPanel Result="_dispatchResult" />
+            </div>
+        </ChildContent>
+    </ApiTestCollapseSection>
+</div>
+
+@code {
+    string? _token;
+    bool _loginBusy, _fleetBusy, _robotsBusy, _bufferBusy, _waitPointBusy;
+    ApiCallResult<LoginData>? _loginResult;
+    ApiCallResult<List<FleetStatusDto>>? _fleetResult;
+    ApiCallResult<List<RobotStatusDto>>? _robotsResult;
+    ApiCallResult<List<WmsCellDto>>? _bufferResult;
+    ApiCallResult<List<WmsCellDto>>? _waitPointResult;
+
+    bool _dispatchOptionsBusy, _dispatchBusy, _dispatchOptionsLoaded;
+    string? _dispatchProgress;
+    string _dispatchTaskKind = "MoveToNearestWp";
+    string _dispatchRobotId = "";
+    string _dispatchTargetSite = "";
+    string _dispatchAmrType = "Cake";
+    List<FleetStatusDto> _dispatchFleet = [];
+    List<WmsCellDto> _dispatchSites = [];
+    ApiCallResult<SimulationTaskCreatedDto>? _dispatchResult;
+
+    SimulationTaskKindOption? _dispatchTask =>
+        SimulationTaskTestHelper.FindTaskKind(_dispatchTaskKind);
+
+    IEnumerable<WmsCellDto> DispatchTargetSites =>
+        SimulationTaskTestHelper.FilterSites(_dispatchSites, _dispatchTask?.TargetCellTypes);
+
+    string DispatchTargetSiteLabel => _dispatchTask?.Value switch
+    {
+        "MoveToBuffer" => "BUFFER 站點",
+        "MoveToTwp" => "TWP 站點",
+        "MoveToClr" => "CLR 站點",
+        "MoveToPkg" => "AOI 包裝站（PKG）",
+        _ => "目標站點"
+    };
+
+    IEnumerable<FleetStatusDto> DispatchFleetRobots
+    {
+        get
+        {
+            var robots = _dispatchFleet.AsEnumerable();
+            if (!string.IsNullOrEmpty(_dispatchTask?.FixedAmrType))
+            {
+                robots = robots.Where(v =>
+                    SimulationTaskTestHelper.InferAmrType(v.RobotId)
+                        .Equals(_dispatchTask.FixedAmrType, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return robots;
+        }
+    }
+
+    async Task OnLoadDispatchOptionsAsync()
+    {
+        if (!await EnsureTokenAsync()) return;
+
+        _dispatchOptionsBusy = true;
+        StateHasChanged();
+        try
+        {
+            var fleetResult = await AmrApi.GetFleetStatusAsync(_token!);
+            var sitesResult = await AmrApi.GetAllWmsCellsAsync(_token!);
+
+            _dispatchFleet = fleetResult.Success && fleetResult.Data is not null
+                ? fleetResult.Data
+                    .Where(v => SimulationTaskTestHelper.IsFleetRobot(v.RobotId))
+                    .OrderBy(v => v.RobotId, StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+                : [];
+
+            _dispatchSites = sitesResult.Success && sitesResult.Data is not null
+                ? sitesResult.Data
+                : [];
+
+            _dispatchOptionsLoaded = _dispatchFleet.Count > 0 && _dispatchSites.Count > 0;
+
+            if (_dispatchFleet.All(v => v.RobotId != _dispatchRobotId))
+                _dispatchRobotId = _dispatchFleet.FirstOrDefault()?.RobotId ?? "";
+
+            SanitizeDispatchRobotSelection();
+            SanitizeDispatchSiteSelections();
+        }
+        finally
+        {
+            _dispatchOptionsBusy = false;
+        }
+    }
+
+    void OnDispatchTaskKindChanged()
+    {
+        SanitizeDispatchRobotSelection();
+        SanitizeDispatchSiteSelections();
+    }
+
+    void SanitizeDispatchRobotSelection()
+    {
+        var robots = DispatchFleetRobots.ToList();
+        if (robots.All(v => v.RobotId != _dispatchRobotId))
+            _dispatchRobotId = robots.FirstOrDefault()?.RobotId ?? "";
+        OnDispatchRobotChanged();
+    }
+
+    void OnDispatchRobotChanged()
+    {
+        if (string.IsNullOrEmpty(_dispatchRobotId))
+        {
+            _dispatchAmrType = "Cake";
+            return;
+        }
+
+        _dispatchAmrType = _dispatchTask?.FixedAmrType
+            ?? SimulationTaskTestHelper.InferAmrType(_dispatchRobotId);
+    }
+
+    void SanitizeDispatchSiteSelections()
+    {
+        if (_dispatchTask?.NeedsTargetSite != true)
+            _dispatchTargetSite = "";
+    }
+
+    static ApiCallResult<SimulationTaskCreatedDto> DispatchValidationError(string message) =>
+        new(false, message, ApiFailureStage.None, "", "POST", 0, 0, [], null, null);
+
+    async Task OnDispatchAsync()
+    {
+        if (!await EnsureTokenAsync()) return;
+
+        var task = _dispatchTask;
+        if (task is null)
+        {
+            _dispatchResult = DispatchValidationError("未知的移動方式");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_dispatchRobotId))
+        {
+            _dispatchResult = DispatchValidationError("請選擇車輛");
+            return;
+        }
+
+        if (task.NeedsTargetSite && string.IsNullOrWhiteSpace(_dispatchTargetSite))
+        {
+            _dispatchResult = DispatchValidationError($"請選擇{DispatchTargetSiteLabel}");
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(task.FixedAmrType)
+            && !SimulationTaskTestHelper.InferAmrType(_dispatchRobotId)
+                .Equals(task.FixedAmrType, StringComparison.OrdinalIgnoreCase))
+        {
+            _dispatchResult = DispatchValidationError($"此任務僅限 {task.FixedAmrType} 車");
+            return;
+        }
+
+        _dispatchBusy = true;
+        _dispatchResult = null;
+        _dispatchProgress = null;
+        StateHasChanged();
+
+        try
+        {
+            if (task.IsCompositeFlow)
+            {
+                _dispatchResult = await new MoveToNearestWpOrchestrator(AmrApi).RunAsync(
+                    _token!, _dispatchRobotId, _dispatchAmrType);
+                return;
+            }
+
+            if (TryGetSiteReturnFlow(task.Value, out var siteLabel, out var triggerEvent))
+            {
+                var orchestrator = new MoveToSiteReturnWpOrchestrator(AmrApi);
+                _dispatchResult = await orchestrator.RunAsync(
+                    _token!,
+                    _dispatchRobotId,
+                    _dispatchAmrType,
+                    _dispatchTargetSite,
+                    siteLabel,
+                    triggerEvent,
+                    task.FixedAmrType,
+                    msg =>
+                    {
+                        _dispatchProgress = msg;
+                        _ = InvokeAsync(StateHasChanged);
+                    });
+                return;
+            }
+        }
+        finally
+        {
+            _dispatchBusy = false;
+            _dispatchProgress = null;
+        }
+    }
+
+    static string FormatRobotOption(FleetStatusDto v) =>
+        $"{v.RobotId}（{v.State} @ {v.CurrentSite ?? "—"}）";
+
+    static string FormatSiteOption(WmsCellDto site) =>
+        string.IsNullOrWhiteSpace(site.CellName)
+            ? site.CellId
+            : $"{site.CellId} — {site.CellName}";
+
+    static bool TryGetSiteReturnFlow(
+        string taskValue,
+        out string siteLabel,
+        out string triggerEvent)
+    {
+        switch (taskValue)
+        {
+            case "MoveToBuffer":
+                siteLabel = "BUFFER";
+                triggerEvent = "api-test-buffer-return-wp";
+                return true;
+            case "MoveToTwp":
+                siteLabel = "TWP";
+                triggerEvent = "api-test-twp-return-wp";
+                return true;
+            case "MoveToClr":
+                siteLabel = "CLR";
+                triggerEvent = "api-test-clr-return-wp";
+                return true;
+            case "MoveToPkg":
+                siteLabel = "AOI PKG";
+                triggerEvent = "api-test-pkg-return-wp";
+                return true;
+            default:
+                siteLabel = "";
+                triggerEvent = "";
+                return false;
+        }
+    }
+
+    async Task OnLoginAsync()
+    {
+        _loginBusy = true;
+        _loginResult = null;
+        StateHasChanged();
+        try
+        {
+            _loginResult = await AmrApi.LoginAsync();
+            if (_loginResult.Success && _loginResult.Data is not null)
+                _token = _loginResult.Data.AccessToken;
+        }
+        finally { _loginBusy = false; }
+    }
+
+    async Task OnFleetAsync()
+    {
+        if (!await EnsureTokenAsync()) return;
+        _fleetBusy = true;
+        _fleetResult = null;
+        StateHasChanged();
+        try { _fleetResult = await AmrApi.GetFleetStatusAsync(_token!); }
+        finally { _fleetBusy = false; }
+    }
+
+    async Task OnRobotsAsync()
+    {
+        if (!await EnsureTokenAsync()) return;
+        _robotsBusy = true;
+        _robotsResult = null;
+        StateHasChanged();
+        try { _robotsResult = await AmrApi.GetRobotsStatusAsync(_token!); }
+        finally { _robotsBusy = false; }
+    }
+
+    async Task OnBufferAsync()
+    {
+        if (!await EnsureTokenAsync()) return;
+        _bufferBusy = true;
+        _bufferResult = null;
+        StateHasChanged();
+        try { _bufferResult = await AmrApi.GetBufferStatusAsync(_token!); }
+        finally { _bufferBusy = false; }
+    }
+
+    async Task OnWaitPointAsync()
+    {
+        if (!await EnsureTokenAsync()) return;
+        _waitPointBusy = true;
+        _waitPointResult = null;
+        StateHasChanged();
+        try { _waitPointResult = await AmrApi.GetWaitPointStatusAsync(_token!); }
+        finally { _waitPointBusy = false; }
+    }
+
+    async Task<bool> EnsureTokenAsync()
+    {
+        if (!string.IsNullOrEmpty(_token)) return true;
+        await OnLoginAsync();
+        return !string.IsNullOrEmpty(_token);
+    }
+
+    void ClearToken()
+    {
+        _token = null;
+        _fleetResult = null;
+        _robotsResult = null;
+        _bufferResult = null;
+        _waitPointResult = null;
+        _dispatchResult = null;
+        _dispatchOptionsLoaded = false;
+        _dispatchFleet = [];
+        _dispatchSites = [];
+    }
+
+    static string MaskToken(string token) =>
+        token.Length <= 12 ? token : $"{token[..8]}…{token[^4..]}";
+}
