@@ -77,6 +77,10 @@
     background-image: url("images/nav/api.svg");
 }
 
+::deep .nav-icon-modbus {
+    background-image: url("images/nav/modbus.svg");
+}
+
 ::deep .nav-icon-spinning {
     background-image: url("images/nav/spinning.svg");
 }

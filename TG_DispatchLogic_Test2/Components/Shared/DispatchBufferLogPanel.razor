@@ -1,0 +1,54 @@
+@using TG_DispatchLogic_Test2.Models
+
+<section class="dispatch-log-section">
+    <div class="dispatch-log-header">
+        <h3 class="dispatch-section-title mb-0">派車紀錄</h3>
+        @if (Logs.Count > 0)
+        {
+            <button type="button" class="dispatch-log-clear-btn" @onclick="OnClear">清除紀錄</button>
+        }
+    </div>
+
+    @if (Logs.Count == 0)
+    {
+        <p class="api-test-hint mb-0">尚無派車紀錄（成功／失敗的 API 呼叫會保留於此）</p>
+    }
+    else
+    {
+        <div class="fleet-api-log-list dispatch-buffer-log-list">
+            @foreach (var log in Logs)
+            {
+                <details class="fleet-api-log-item @(log.Success ? "ok" : "err")">
+                    <summary class="fleet-api-log-summary">
+                        <span class="fleet-api-log-time">@log.At.ToString("HH:mm:ss")</span>
+                        <span class="fleet-api-log-badge">@(log.Success ? "成功" : "失敗")</span>
+                        <span class="fleet-api-log-label">@log.ParkingPointId → @log.AmrCode</span>
+                        <code class="fleet-api-log-api">POST /v2/flows/amr_mission</code>
+                        <span class="fleet-api-log-summary-text">@log.Summary</span>
+                    </summary>
+                    <div class="fleet-api-log-detail">
+                        @if (!string.IsNullOrWhiteSpace(log.JsonBody))
+                        {
+                            <div class="dispatch-json-block">
+                                <div class="dispatch-json-title">Request</div>
+                                <pre class="dispatch-json-pre small">@log.JsonBody</pre>
+                            </div>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(log.ResponseBody))
+                        {
+                            <div class="dispatch-json-block">
+                                <div class="dispatch-json-title">Response</div>
+                                <pre class="dispatch-json-pre small">@log.ResponseBody</pre>
+                            </div>
+                        }
+                    </div>
+                </details>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public IReadOnlyList<BufferDispatchLogEntry> Logs { get; set; } = [];
+    [Parameter] public EventCallback OnClear { get; set; }
+}

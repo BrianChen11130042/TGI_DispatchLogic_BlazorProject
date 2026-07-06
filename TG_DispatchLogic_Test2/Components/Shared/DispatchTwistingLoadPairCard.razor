@@ -1,0 +1,132 @@
+@rendermode InteractiveServer
+
+@using TG_DispatchLogic_Test2.Models
+
+@using TG_DispatchLogic_Test2.Services
+
+
+
+<div class="dispatch-pair-card @(CanDispatch ? "" : "dispatch-pair-card-waiting")">
+
+    <div class="dispatch-pair-head">
+
+        <span class="equip-badge equip-badge-info">@Pair.Machine.MachineCode @Pair.Machine.Side</span>
+
+        <span class="equip-badge equip-badge-info">@TwistingLoadLaneAdmission.FormatTwpLane(Pair.Machine.TwpGroupId)</span>
+
+        <span class="dispatch-pair-meta parking-cat-muted small">
+
+            @TwistingLoadMissionPlanner.FormatMissionStops(Pair.MissionStops)
+
+        </span>
+
+        <span class="dispatch-pair-arrow">→</span>
+
+        <span class="equip-badge equip-badge-call">@Pair.Vehicle.AmrCode</span>
+
+        <span class="dispatch-pair-meta parking-cat-muted small">
+
+            3 停車點 × 4 Port · 依序 POST @Pair.Stops.Count 次
+
+        </span>
+
+        @if (DispatchMode == "manual")
+
+        {
+
+            <button type="button"
+
+                    class="dispatch-send-btn"
+
+                    disabled="@(!CanDispatch || DispatchBusy)"
+
+                    title="@DispatchBlockReason"
+
+                    @onclick="DispatchAsync">
+
+                派車
+
+            </button>
+
+        }
+
+        else
+
+        {
+
+            <span class="dispatch-auto-badge">@(CanDispatch ? "自動派車" : "等待放行")</span>
+
+        }
+
+    </div>
+
+
+
+    @if (!CanDispatch && !string.IsNullOrWhiteSpace(DispatchBlockReason))
+
+    {
+
+        <p class="api-test-hint small mb-2 dispatch-pair-wait-hint">@DispatchBlockReason</p>
+
+    }
+
+
+
+    @for (var i = 0; i < Pair.Stops.Count; i++)
+
+    {
+
+        var stop = Pair.Stops[i];
+
+        <div class="dispatch-json-block @(i > 0 ? "mt-2" : "")">
+
+            <div class="dispatch-json-title">
+
+                第 @stop.StopIndex 次 · POST /v2/flows/@Pair.FlowName · @stop.ParkingPointId
+
+            </div>
+
+            <div class="dispatch-pair-meta parking-cat-muted small mb-1">
+
+                actionid=3（車→撚紗機）×@TwistingParkingRegistry.PortsPerDockingPoint
+
+            </div>
+
+            <pre class="dispatch-json-pre small">@stop.JsonBody</pre>
+
+        </div>
+
+    }
+
+</div>
+
+
+
+@code {
+
+    [Parameter, EditorRequired] public TwistingLoadDispatchPair Pair { get; set; } = default!;
+
+    [Parameter] public bool CanDispatch { get; set; } = true;
+
+    [Parameter] public string? DispatchBlockReason { get; set; }
+
+    [Parameter] public string DispatchMode { get; set; } = "manual";
+
+    [Parameter] public bool DispatchBusy { get; set; }
+
+    [Parameter] public EventCallback<TwistingLoadDispatchPair> OnDispatch { get; set; }
+
+
+
+    async Task DispatchAsync()
+
+    {
+
+        if (!CanDispatch || DispatchBusy) return;
+
+        await OnDispatch.InvokeAsync(Pair);
+
+    }
+
+}
+

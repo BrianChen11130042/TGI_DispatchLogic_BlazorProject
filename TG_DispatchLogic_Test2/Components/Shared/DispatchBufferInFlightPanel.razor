@@ -1,0 +1,42 @@
+@using TG_DispatchLogic_Test2.Models
+
+<section class="dispatch-inflight-section">
+    <h3 class="dispatch-section-title">
+        任務中的派車
+        @if (Tasks.Count > 0)
+        {
+            <span class="parking-cat-muted small">@Tasks.Count 筆 · 完成後自動移出</span>
+        }
+    </h3>
+
+    @if (Tasks.Count == 0)
+    {
+        <p class="api-test-hint mb-0">目前沒有進行中的派車任務</p>
+    }
+    else
+    {
+        <div class="dispatch-inflight-list">
+            @foreach (var task in Tasks)
+            {
+                <div class="dispatch-inflight-card">
+                    <div class="dispatch-inflight-card-head">
+                        <span class="equip-badge equip-badge-info">@task.ParkingPointId</span>
+                        <span class="equip-badge equip-badge-call">作業面 @task.DispatchedOperationSide</span>
+                        <span class="dispatch-pair-arrow">→</span>
+                        <span class="equip-badge equip-badge-call">@task.AmrCode</span>
+                        <span class="dispatch-status-badge busy">作業中</span>
+                    </div>
+                    <div class="dispatch-inflight-card-meta parking-cat-muted small">
+                        <code>@task.TaskId</code>
+                        <span>· 派車 @task.DispatchedAt.ToString("HH:mm:ss")</span>
+                    </div>
+                    <div class="dispatch-inflight-card-status">@task.StatusHint</div>
+                </div>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public IReadOnlyList<BufferDispatchInFlight> Tasks { get; set; } = [];
+}

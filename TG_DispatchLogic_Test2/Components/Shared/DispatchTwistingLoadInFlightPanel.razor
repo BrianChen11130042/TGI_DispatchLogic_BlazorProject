@@ -1,0 +1,52 @@
+@using TG_DispatchLogic_Test2.Models
+
+<section class="dispatch-inflight-section">
+    <h3 class="dispatch-section-title">
+        任務中的派車
+        @if (Tasks.Count > 0)
+        {
+            <span class="parking-cat-muted small">@Tasks.Count 筆 · 完成後自動移出</span>
+        }
+    </h3>
+
+    @if (Tasks.Count == 0)
+    {
+        <p class="api-test-hint mb-0">目前沒有進行中的撚紗上料派車</p>
+    }
+    else
+    {
+        <div class="dispatch-inflight-list">
+            @foreach (var task in Tasks)
+            {
+                <div class="dispatch-inflight-card">
+                    <div class="dispatch-inflight-card-head">
+                        <span class="equip-badge equip-badge-info">@task.MachineCode @task.Side</span>
+                        <span class="dispatch-pair-arrow">→</span>
+                        <span class="equip-badge equip-badge-call">@task.AmrCode</span>
+                        <span class="dispatch-status-badge busy">作業中</span>
+                    </div>
+                    <div class="dispatch-inflight-card-meta parking-cat-muted small">
+                        <span>@string.Join(" · ", task.ParkingPointIds)</span>
+                        <span>· 派車 @task.DispatchedAt.ToString("HH:mm:ss")</span>
+                        <span>· flow @task.CompletedStops/@task.TotalFlows</span>
+                    </div>
+                    @if (task.TaskIds.Count > 0)
+                    {
+                        <div class="dispatch-inflight-card-meta parking-cat-muted small">
+                            @foreach (var id in task.TaskIds)
+                            {
+                                <code>@id</code>
+                                <text> </text>
+                            }
+                        </div>
+                    }
+                    <div class="dispatch-inflight-card-status">@task.StatusHint</div>
+                </div>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public IReadOnlyList<TwistingLoadInFlight> Tasks { get; set; } = [];
+}

@@ -1,0 +1,39 @@
+@using TG_DispatchLogic_Test2.Models
+
+@if (Side is not null)
+{
+    @foreach (var point in Side.ParkingPoints)
+    {
+        var isShared = point.SharedWith is not null;
+        <div class="equip-dock-row @(isShared ? "is-shared" : "")">
+            <span class="equip-dock-label" title="@DockTooltip(point)">@point.ParkingPointId</span>
+            @foreach (var port in point.Ports)
+            {
+                var addr = PortType == "Cake" ? port.CakeAddress : port.BobbinAddress;
+                var raw = GetValue(addr);
+                var css = EquipSimUiHelper.PortCss(raw);
+                var label = EquipSimUiHelper.PortLabel(raw);
+                <div class="equip-port-cell equip-port-named @css"
+                     title="@($"機台 {port.PortNumber} | 手臂 {port.ArmPortNumber} | {PortType} {Side.MachineCode}-{Side.Side} | Addr {addr} | {label}{(isShared ? $" | 共用 M{point.SharedWith!.MachineId:D2}-{point.SharedWith.Side}" : "")}")">
+                    <span class="equip-port-status">@EquipSimUiHelper.PortShort(raw)</span>
+                    <span class="equip-port-machine-no">@port.PortNumber</span>
+                    <span class="equip-port-arm-no">@port.ArmPortNumber</span>
+                </div>
+            }
+        </div>
+    }
+}
+
+@code {
+    [Parameter] public ParkingSideDto? Side { get; set; }
+    [Parameter] public string PortType { get; set; } = "Cake";
+    [Parameter] public Func<int, int> GetValue { get; set; } = _ => 0;
+
+    static string DockTooltip(ParkingPointDto point)
+    {
+        var tip = $"D{point.DNumber} | {point.ParkingPointId}";
+        if (point.SharedWith is { } sw)
+            tip += $" ↔ M{sw.MachineId:D2}-{sw.Side} {sw.ParkingPointId}";
+        return tip;
+    }
+}

@@ -1,0 +1,77 @@
+@using TG_DispatchLogic_Test2.Models
+
+<div class="parking-cat-card parking-cat-side @(Side.Side == 'A' ? "side-a" : "side-b")">
+    <div class="parking-cat-card-head">
+        <div class="fw-bold">@Side.MachineCode · @Side.Side 側</div>
+        <div class="parking-cat-muted small">
+            TWP@(Side.TwpGroupId.ToString("D2"))-xx · 機台 Port @Side.PortNumberStart~@Side.PortNumberEnd · 手臂 Port @Side.ArmPortNumberStart~@Side.ArmPortNumberEnd
+        </div>
+        @if (Side.SharedWith is not null)
+        {
+            <span class="equip-badge equip-badge-info">共用 ↔ M@(Side.SharedWith.MachineId.ToString("D2"))-@Side.SharedWith.Side</span>
+        }
+    </div>
+
+    <div class="parking-cat-summary-row">
+        <div class="parking-cat-summary-cell">
+            <div class="parking-cat-muted">Cake</div>
+            <div class="mono fw-bold">@Side.CakeBaseAddress~@Side.CakeAddressEnd</div>
+        </div>
+        <div class="parking-cat-summary-cell">
+            <div class="parking-cat-muted">Bobbin</div>
+            <div class="mono fw-bold">@Side.BobbinBaseAddress~@Side.BobbinAddressEnd</div>
+        </div>
+        <div class="parking-cat-summary-cell">
+            <div class="parking-cat-muted">停車點</div>
+            <div class="fw-bold">@Side.ParkingPoints.Count 個</div>
+        </div>
+    </div>
+
+    <div class="parking-cat-points">
+        @foreach (var pt in Side.ParkingPoints)
+        {
+            var pointKey = $"{Side.MachineId}-{Side.Side}-{pt.ParkingPointId}";
+            var open = ExpandedPoints.Contains(pointKey);
+            <div class="parking-cat-point @(pt.SharedWith is not null ? "is-shared" : "")">
+                <button type="button" class="parking-cat-point-btn" @onclick="() => OnToggle.InvokeAsync(pointKey)">
+                    <span class="fw-bold">@pt.ParkingPointId</span>
+                    <span class="equip-badge equip-badge-muted">D@(pt.DNumber)</span>
+                    <span class="parking-cat-muted small">
+                        機 @(pt.Ports[0].PortNumber)~@(pt.Ports[3].PortNumber) · 臂 @(pt.Ports[0].ArmPortNumber)~@(pt.Ports[3].ArmPortNumber)
+                    </span>
+                    <span class="parking-cat-chevron">@(open ? "▲" : "▼")</span>
+                </button>
+                @if (open)
+                {
+                    <table class="parking-cat-table">
+                        <thead>
+                            <tr>
+                                <th>機台 Port</th>
+                                <th>手臂 Port</th>
+                                <th>Cake Addr</th>
+                                <th>Bobbin Addr</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var port in pt.Ports)
+                            {
+                                <tr>
+                                    <td class="fw-bold">@port.PortNumber</td>
+                                    <td class="fw-bold equip-hint-blue">@port.ArmPortNumber</td>
+                                    <td class="mono">@port.CakeAddress</td>
+                                    <td class="mono">@port.BobbinAddress</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ParkingSideDto Side { get; set; } = default!;
+    [Parameter] public HashSet<string> ExpandedPoints { get; set; } = new();
+    [Parameter] public EventCallback<string> OnToggle { get; set; }
+}

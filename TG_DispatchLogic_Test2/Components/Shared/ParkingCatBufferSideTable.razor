@@ -1,0 +1,41 @@
+@using TG_DispatchLogic_Test2.Models
+
+@{
+    var sideKey = $"{Side.StationId}-{Side.Side}";
+}
+
+<button type="button" class="parking-cat-point-btn" @onclick="() => OnToggle.InvokeAsync(sideKey)">
+    <span class="equip-badge @BadgeClass">@Side.Side 側</span>
+    <span class="parking-cat-muted small mono">Addr @Side.CakeBaseAddress~@Side.CakeAddressEnd</span>
+    <span class="parking-cat-muted small">機 @Side.PortNumberStart~@Side.PortNumberEnd · 臂 @Side.ArmPortNumberStart~@Side.ArmPortNumberEnd</span>
+    <span class="parking-cat-chevron">@(Expanded ? "▲" : "▼")</span>
+</button>
+@if (Expanded)
+{
+    <table class="parking-cat-table">
+        <thead>
+            <tr>
+                <th>機台 Port</th>
+                <th>手臂 Port</th>
+                <th>Addr</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var port in Side.Ports)
+            {
+                <tr>
+                    <td class="fw-bold">@port.PortNumber</td>
+                    <td class="fw-bold equip-hint-blue">@port.ArmPortNumber</td>
+                    <td class="mono">@port.Address</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter, EditorRequired] public BufferSideDto Side { get; set; } = default!;
+    [Parameter] public bool Expanded { get; set; }
+    [Parameter] public string BadgeClass { get; set; } = "equip-badge-muted";
+    [Parameter] public EventCallback<string> OnToggle { get; set; }
+}

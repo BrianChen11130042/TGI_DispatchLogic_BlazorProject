@@ -1,0 +1,106 @@
+@using TG_DispatchLogic_Test2.Models
+
+<div class="parking-cat-card parking-cat-buffer dispatch-buffer-ref-card @CardClass @(_expanded ? "is-expanded" : "")">
+    <button type="button" class="dispatch-ref-toggle" @onclick="Toggle">
+        <div class="dispatch-ref-toggle-main">
+            <div class="dispatch-ref-title-row">
+                <strong>@Evaluation.MachineCode @Evaluation.Side 側</strong>
+                <span class="equip-badge equip-badge-info">TWP@(Evaluation.TwpGroupId.ToString("D2"))</span>
+                <span class="dispatch-status-badge @StatusBadgeClass">@StatusBadgeText</span>
+            </div>
+            <div class="parking-cat-muted small dispatch-ref-toggle-summary">
+                狀態 <strong>@Evaluation.StatusLabel (@Evaluation.Status)</strong> ·
+                @Evaluation.Reason
+                @if (InFlights.Count > 0)
+                {
+                    <text> · @string.Join("；", InFlights.Select(f => $"{f.AmrCode}（{string.Join("→", f.ParkingPointIds)}）"))</text>
+                }
+            </div>
+        </div>
+        <span class="dispatch-ref-chevron">@(_expanded ? "▲ 收合" : "▼ 展開明細")</span>
+    </button>
+
+    @if (_expanded)
+    {
+        <div class="parking-cat-card-body dispatch-ref-body">
+            <div class="parking-cat-muted small dispatch-ref-meta">
+                每停車點 4 Cake Port · 上料任務需 @TwistingParkingRegistry.StopsPerLoadMission 停車點
+            </div>
+
+            @foreach (var point in Evaluation.DockingPoints)
+            {
+                <div class="dispatch-twp-point-block @(point.IsDispatchable ? "ready" : "")">
+                    <div class="dispatch-twp-point-head">
+                        <span class="equip-badge equip-badge-call">@point.ParkingPointId</span>
+                        <span class="parking-cat-muted small">D@point.DNumber · Seq @point.Sequence</span>
+                        <span class="dispatch-status-badge @(point.IsDispatchable ? "ok" : "wait") small-badge">
+                            @(point.IsDispatchable ? "待上料" : "—")
+                        </span>
+                    </div>
+                    <table class="parking-cat-table dispatch-ref-table">
+                        <thead>
+                            <tr>
+                                <th>機台 Port</th>
+                                <th>手臂 Port</th>
+                                <th>Addr</th>
+                                <th>料況</th>
+                                <th>Modbus</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var port in point.CakePorts)
+                            {
+                                <tr>
+                                    <td class="fw-bold">@port.PortNumber</td>
+                                    <td class="fw-bold equip-hint-blue">@port.ArmPortNumber</td>
+                                    <td class="mono">@port.CakeAddress</td>
+                                    <td>@port.Label</td>
+                                    <td class="mono">@port.RawValue</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            <div class="parking-cat-muted small dispatch-ref-legend">Cake Port：0=空 · 1=無絲 · 2=有絲 · 9=異常</div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public TwistingLoadMachineEvaluation Evaluation { get; set; } = default!;
+    [Parameter] public IReadOnlyList<TwistingLoadInFlight> InFlights { get; set; } = [];
+
+    bool _expanded;
+
+    string StatusBadgeClass
+    {
+        get
+        {
+            if (InFlights.Count > 0) return "busy";
+            if (Evaluation.IsDispatchable) return "ok";
+            return Evaluation.Status == TwistingParkingRegistry.CallVehicleStatus ? "warn" : "wait";
+        }
+    }
+
+    string StatusBadgeText
+    {
+        get
+        {
+            if (InFlights.Count > 0) return $"作業中（{InFlights.Count}車）";
+            if (Evaluation.IsDispatchable) return "可派車";
+            return Evaluation.Status == TwistingParkingRegistry.CallVehicleStatus ? "待湊滿停車點" : Evaluation.StatusLabel;
+        }
+    }
+
+    string CardClass
+    {
+        get
+        {
+            if (InFlights.Count > 0) return "in-flight";
+            return Evaluation.IsDispatchable ? "" : "not-dispatchable";
+        }
+    }
+
+    void Toggle() => _expanded = !_expanded;
+}

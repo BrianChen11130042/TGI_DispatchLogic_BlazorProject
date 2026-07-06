@@ -1,0 +1,1029 @@
+@page "/dispatch-logic"
+@rendermode InteractiveServer
+@inject SimulateCodeCatalogService CatalogService
+@inject ModbusEquipPollService PollService
+@inject AmrApiClient AmrApi
+@inject IOptions<EquipSimOptions> EquipSimOptions
+@using Microsoft.Extensions.Options
+@implements IAsyncDisposable
+
+<PageTitle>派車邏輯</PageTitle>
+
+<div class="page-content dispatch-logic-page">
+    <PageHeader Title="Buffer / 撚紗派車邏輯"
+                Subtitle="@($"Modbus 料況 + TGI {AmrApi.BaseUrl} · Cake 車 CAKE-01~12")" />
+
+    <div class="dispatch-fleet-note">
+        <span class="equip-badge equip-badge-call">Cake 車號</span>
+        @string.Join(" · ", DispatchFleetCatalog.CakeVehicleCodes)
+    </div>
+
+    <div class="equip-sim-toolbar">
+        <div class="equip-sim-conn">
+            <label>Modbus IP</label>
+            <DxTextBox @bind-Text="_modbusHost" CssClass="equip-sim-input" />
+            <label>Port</label>
+            <DxSpinEdit @bind-Value="_modbusPort" MinValue="1" MaxValue="65535" CssClass="equip-sim-spin" />
+            <label>Unit ID</label>
+            <DxSpinEdit @bind-Value="_unitId" MinValue="0" MaxValue="255" CssClass="equip-sim-spin" />
+        </div>
+        <div class="equip-sim-status">
+            <span class="equip-live-dot @(_snapshot?.Success == true ? "is-ok" : "is-err")"></span>
+            @if (_snapshot?.Success == true)
+            {
+                <span>Modbus · @_snapshot.ElapsedMs ms · @_snapshot.PolledAt.ToString("HH:mm:ss")</span>
+            }
+            else if (_modbusBusy && _snapshot is null)
+            {
+                <span>Modbus 連線中…</span>
+            }
+            else
+            {
+                <span class="text-danger">@(_snapshot?.Error ?? "Modbus 尚未讀取")</span>
+            }
+            <span class="dispatch-amr-status @(_amrError is null ? "ok" : "err")">
+                @if (_amrError is null && _lastAmrRefresh is not null)
+                {
+                    <text>TGI · @_lastAmrRefresh.Value.ToString("HH:mm:ss")</text>
+                }
+                else if (_amrError is not null)
+                {
+                    <text>@_amrError</text>
+                }
+            </span>
+            <DxCheckBox @bind-Checked="_autoRefresh">自動更新（Buffer 0.8 秒 · TGI 1.5 秒）</DxCheckBox>
+            <DxButton Text="立即更新"
+                      RenderStyle="ButtonRenderStyle.Secondary"
+                      CssClass="dispatch-refresh-now"
+                      Click="RefreshNowAsync"
+                      Enabled="@(!_modbusBusy && !_tgiBusy)" />
+        </div>
+    </div>
+
+    <div class="equip-tab-bar">
+        <button type="button" class="equip-tab-btn @(_mainTab == "buffer" ? "active" : "")"
+                @onclick='() => _mainTab = "buffer"'>Buffer 區派車</button>
+        <button type="button" class="equip-tab-btn @(_mainTab == "twisting-load" ? "active" : "")"
+                @onclick='() => _mainTab = "twisting-load"'>撚紗上料派車</button>
+        <button type="button" class="equip-tab-btn @(_mainTab == "twisting-unload" ? "active" : "")"
+                @onclick='() => _mainTab = "twisting-unload"'>撚紗下料派車</button>
+    </div>
+
+    @if (_mainTab == "buffer")
+    {
+        <div class="dispatch-mode-bar">
+            <span class="equip-panel-hint mb-0">派車模式</span>
+            <button type="button" class="equip-tab-btn small @(_dispatchMode == "manual" ? "active" : "")"
+                    @onclick='SetDispatchModeManual'>手動（先預覽 JSON）</button>
+            <button type="button" class="equip-tab-btn small @(_dispatchMode == "auto" ? "active" : "")"
+                    @onclick='SetDispatchModeAuto'>自動派車</button>
+            @if (_dispatchMode == "manual")
+            {
+                <span class="api-test-hint">檢查 JSON 後按各組「派車」</span>
+            }
+            else
+            {
+                <span class="api-test-hint">符合配對條件時自動派車 · 每 @BufferAutoDispatchIntervalSeconds 秒最多派 1 組</span>
+            }
+        </div>
+
+        <div class="equip-panel-hint">
+            Buffer：作業面 12 Port 皆有料 · 停車點無車停靠 · Cake 車：idle、無任務、12 Port 全空 · 配對優先等待區（WP）車輛 · 派車後 Buffer 鎖定至任務完成
+        </div>
+
+        @if (_snapshot is null)
+        {
+            <p class="api-test-hint">正在讀取 Modbus 資料…</p>
+        }
+        else if (!_snapshot.Success)
+        {
+            <p class="text-danger">@(_snapshot.Error ?? "Modbus 讀取失敗")</p>
+        }
+        else
+        {
+            <div class="dispatch-summary @(AvailableBufferCount > 0 ? "has-ready" : "")">
+                <strong>Buffer 可派車：@AvailableBufferCount</strong>
+                <span>· 可派 Cake 車：@(_cakeVehicles.Count(v => v.IsEligible && !IsAmrBusy(v.AmrCode)))</span>
+                <span>· 配對：@(_pairings?.Count ?? 0) 組</span>
+                @if (ActiveInFlightCount > 0)
+                {
+                    <span>· 任務中：@ActiveInFlightCount</span>
+                }
+            </div>
+
+            @if (_pairings is { Count: > 0 })
+            {
+                <section class="dispatch-section">
+                    <h3 class="dispatch-section-title">配對與派車（amr_mission）</h3>
+                    <div class="dispatch-pair-grid">
+                        @foreach (var pair in _pairings)
+                        {
+                            <DispatchBufferPairCard Pair="pair"
+                                                    DispatchMode="@_dispatchMode"
+                                                    DispatchBusy="@_dispatchBusy"
+                                                    OnDispatch="DispatchPairManualAsync" />
+                        }
+                    </div>
+                </section>
+            }
+            else if (DispatchableBufferCount > 0 && ActiveInFlightCount == 0)
+            {
+                <p class="api-test-hint">有 Buffer 可派車，但目前沒有可用的空閒 Cake 車可配對。</p>
+            }
+            else if (DispatchableBufferCount == 0 && ActiveInFlightCount == 0)
+            {
+                <p class="api-test-hint">目前無符合條件的 Buffer 或配對。</p>
+            }
+
+            <DispatchBufferInFlightPanel Tasks="ActiveInFlightTasks" />
+            <DispatchBufferLogPanel Logs="_dispatchLogs" OnClear="ClearDispatchLogsAsync" />
+        }
+
+        <section class="dispatch-section dispatch-detail-section">
+            <h3 class="dispatch-section-title">
+                Cake 車 Port 明細（CAKE-01 ~ CAKE-12）
+                <span class="parking-cat-muted small">GET /v2/robots/status · 展開可看 12 Port</span>
+            </h3>
+            @if (_amrError is not null)
+            {
+                <p class="text-danger small dispatch-tgi-hint">@_amrError</p>
+            }
+            else if (_lastAmrRefresh is not null)
+            {
+                <p class="api-test-hint small dispatch-tgi-hint">
+                    TGI 最後更新 @_lastAmrRefresh.Value.ToString("HH:mm:ss") · API 回報 @_tgiRobotReportCount 台
+                </p>
+            }
+            else
+            {
+                <p class="api-test-hint small dispatch-tgi-hint">等待 TGI 連線…</p>
+            }
+            <div class="dispatch-buffer-grid">
+                @foreach (var v in _cakeVehicles)
+                {
+                    <DispatchCakeVehicleView Vehicle="v" />
+                }
+            </div>
+        </section>
+
+        @if (_snapshot?.Success == true && _bufferEvaluations is { Count: > 0 })
+        {
+            <section class="dispatch-section dispatch-detail-section">
+                <h3 class="dispatch-section-title">Buffer 作業面明細</h3>
+                <div class="dispatch-buffer-grid">
+                    @foreach (var eval in _bufferEvaluations)
+                    {
+                        var meta = BufferParkingRegistry.Get(eval.StationId);
+                        if (meta is null) continue;
+                        var inFlight = _inFlightDispatches.FirstOrDefault(f =>
+                            f.IsActive &&
+                            f.ParkingPointId.Equals(eval.ParkingPointId, StringComparison.OrdinalIgnoreCase));
+                        <DispatchBufferStationView Meta="meta"
+                                                   Evaluation="eval"
+                                                   InFlight="inFlight" />
+                    }
+                </div>
+            </section>
+        }
+    }
+    else if (_mainTab == "twisting-load")
+    {
+        <div class="dispatch-mode-bar">
+            <span class="equip-panel-hint mb-0">派車模式</span>
+            <button type="button" class="equip-tab-btn small @(_twpDispatchMode == "manual" ? "active" : "")"
+                    @onclick='SetTwpDispatchModeManual'>手動（先預覽 JSON）</button>
+            <button type="button" class="equip-tab-btn small @(_twpDispatchMode == "auto" ? "active" : "")"
+                    @onclick='SetTwpDispatchModeAuto'>自動派車</button>
+            @if (_twpDispatchMode == "manual")
+            {
+                <span class="api-test-hint">一組配對依序 POST 3 次 flow（每次 4 手臂任務）</span>
+            }
+            else
+            {
+                <span class="api-test-hint">叫車狀態 + 3 停車點可上料時自動派車 · 每 @TwpAutoDispatchIntervalSeconds 秒最多派 1 組（等同按派車鍵）</span>
+            }
+        </div>
+
+        <div class="equip-panel-hint">
+            撚紗機：狀態=叫車、尾端 3 停車點 × 4 Cake Port 待上料 · 優先序：機台 → 左右走道（可同時派尾端組）→ 走道內尾端往前 · 後組須前組車輛實際開進 TWP 走道（fleet current_site）· 同機同側最多 @TwistingParkingRegistry.MaxConcurrentMissionsPerSide 車
+        </div>
+
+        @if (_snapshot is null)
+        {
+            <p class="api-test-hint">正在讀取 Modbus 資料…</p>
+        }
+        else if (!_snapshot.Success)
+        {
+            <p class="text-danger">@(_snapshot.Error ?? "Modbus 讀取失敗")</p>
+        }
+        else
+        {
+            <div class="dispatch-summary @(TwpAvailableMissionBlockCount > 0 ? "has-ready" : "")">
+                <strong>可派組數：@TwpAvailableMissionBlockCount</strong>
+                <span>· 叫車中機側：@TwpCallableSideCount</span>
+                <span>· 可派 Cake 車：@(_twpCakeVehicles.Count(v => v.IsEligible && !IsAmrBusy(v.AmrCode)))</span>
+                <span>· 配對：@(_twpPairings?.Count ?? 0) 組</span>
+                @if (TwpActiveInFlightCount > 0)
+                {
+                    <span>· 任務中：@TwpActiveInFlightCount</span>
+                }
+            </div>
+
+            @if (_twpPairings is { Count: > 0 })
+            {
+                <section class="dispatch-section">
+                    <h3 class="dispatch-section-title">配對與派車（amr_mission · actionid=3）</h3>
+                    <div class="dispatch-pair-grid">
+                        @foreach (var pair in _twpPairings)
+                        {
+                            <DispatchTwistingLoadPairCard Pair="pair"
+                                                          CanDispatch="@GetTwpPairCanDispatch(pair)"
+                                                          DispatchBlockReason="@GetTwpPairBlockReason(pair)"
+                                                          DispatchMode="@_twpDispatchMode"
+                                                          DispatchBusy="@_twpDispatchBusy"
+                                                          OnDispatch="DispatchTwpPairManualAsync" />
+                        }
+                    </div>
+                </section>
+            }
+            else if (TwpCallableSideCount > 0 && TwpActiveInFlightCount == 0)
+            {
+                <p class="api-test-hint">有撚紗機可派車，但目前沒有可用的滿載 Cake 車可配對。</p>
+            }
+            else if (TwpCallableSideCount == 0 && TwpActiveInFlightCount == 0)
+            {
+                <p class="api-test-hint">目前無叫車狀態且湊滿 3 停車點的撚紗機，或無可配對車輛。</p>
+            }
+
+            <DispatchTwistingLoadInFlightPanel Tasks="TwpActiveInFlightTasks" />
+            <DispatchBufferLogPanel Logs="_twpDispatchLogs" OnClear="ClearTwpDispatchLogsAsync" />
+        }
+
+        <section class="dispatch-section dispatch-detail-section">
+            <h3 class="dispatch-section-title">
+                Cake 車 Port 明細（上料用 · CAKE-01 ~ CAKE-12）
+                <span class="parking-cat-muted small">需 12 Port 有 Cake 有絲</span>
+            </h3>
+            @if (_amrError is not null)
+            {
+                <p class="text-danger small dispatch-tgi-hint">@_amrError</p>
+            }
+            else if (_lastAmrRefresh is not null)
+            {
+                <p class="api-test-hint small dispatch-tgi-hint">
+                    TGI 最後更新 @_lastAmrRefresh.Value.ToString("HH:mm:ss")
+                </p>
+            }
+            <div class="dispatch-buffer-grid">
+                @foreach (var v in _twpCakeVehicles)
+                {
+                    <DispatchCakeVehicleView Vehicle="v" />
+                }
+            </div>
+        </section>
+
+        @if (_snapshot?.Success == true && _twpMachineEvaluations is { Count: > 0 })
+        {
+            <section class="dispatch-section dispatch-detail-section">
+                <h3 class="dispatch-section-title">撚紗機作業明細</h3>
+                <div class="dispatch-buffer-grid">
+                    @foreach (var eval in _twpMachineEvaluations)
+                    {
+                        var inFlights = _twpInFlightDispatches
+                            .Where(f => f.IsActive && f.MissionKey.Equals(eval.MissionKey, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+                        <DispatchTwistingLoadMachineView Evaluation="eval" InFlights="inFlights" />
+                    }
+                </div>
+            </section>
+        }
+    }
+    else if (_mainTab == "twisting-unload")
+    {
+        <div class="dispatch-placeholder-card">
+            <h3>撚紗下料派車</h3>
+            <p class="api-test-hint">撚紗機下料（撚紗機 → Cake 車）派車邏輯開發中。</p>
+        </div>
+    }
+</div>
+
+@code {
+    const int ModbusPollIntervalMs = 800;
+    const int TgiPollIntervalMs = 1500;
+    const int ModbusTimeoutMs = 3000;
+    const int BufferAutoDispatchIntervalSeconds = 20;
+    const int TwpAutoDispatchIntervalSeconds = 10;
+    const int TwpDispatchRetryDelaySeconds = 5;
+
+    string _modbusHost = "";
+    int _modbusPort;
+    int _unitId;
+    bool _autoRefresh = true;
+    bool _modbusBusy;
+    bool _tgiBusy;
+    bool _dispatchBusy;
+    string _mainTab = "buffer";
+    string _dispatchMode = "manual";
+
+    string? _token;
+    string? _amrError;
+    DateTime? _lastAmrRefresh;
+
+    ModbusEquipCatalog? _catalog;
+    EquipSimLiveSnapshot? _snapshot;
+    IReadOnlyList<BufferDispatchEvaluation>? _bufferEvaluations;
+    IReadOnlyList<CakeVehicleDispatchStatus> _cakeVehicles =
+        CakeVehicleDispatchEvaluator.BuildWaitingFleet();
+    IReadOnlyList<BufferDispatchPair>? _pairings;
+
+    readonly List<BufferDispatchLogEntry> _dispatchLogs = [];
+    readonly List<BufferDispatchInFlight> _inFlightDispatches = [];
+    List<RobotStatusDto> _lastRobots = [];
+    List<FleetStatusDto> _lastFleetStatuses = [];
+
+    string _twpDispatchMode = "manual";
+    bool _twpDispatchBusy;
+    IReadOnlyList<TwistingLoadMachineEvaluation>? _twpMachineEvaluations;
+    IReadOnlyList<CakeVehicleDispatchStatus> _twpCakeVehicles =
+        CakeVehicleDispatchEvaluator.BuildWaitingFleet("等待 TGI /v2/robots/status…");
+    IReadOnlyList<TwistingLoadDispatchPair>? _twpPairings;
+    readonly List<BufferDispatchLogEntry> _twpDispatchLogs = [];
+    readonly List<TwistingLoadInFlight> _twpInFlightDispatches = [];
+
+    DateTime? _lastBufferAutoFlowAt;
+    DateTime? _lastTwpAutoFlowAt;
+
+    CancellationTokenSource? _pollCts;
+
+    int DispatchableBufferCount =>
+        _bufferEvaluations?.Count(e => e.IsDispatchable) ?? 0;
+
+    int AvailableBufferCount =>
+        DispatchableBuffers.Count(b => !BufferDispatchTracker.IsBufferLocked(_inFlightDispatches, b.ParkingPointId));
+
+    int ActiveInFlightCount =>
+        _inFlightDispatches.Count(f => f.IsActive);
+
+    IReadOnlyList<BufferDispatchInFlight> ActiveInFlightTasks =>
+        _inFlightDispatches.Where(f => f.IsActive).ToList();
+
+    IEnumerable<BufferDispatchEvaluation> DispatchableBuffers =>
+        _bufferEvaluations?.Where(e => e.IsDispatchable) ?? [];
+
+    int TwpCallableSideCount =>
+        _twpMachineEvaluations?.Count(m =>
+            m.Status == TwistingParkingRegistry.CallVehicleStatus &&
+            m.AvailableMissions.Count > 0) ?? 0;
+
+    int TwpAvailableMissionBlockCount =>
+        CountAvailableTwpMissionBlocks();
+
+    int CountAvailableTwpMissionBlocks()
+    {
+        if (_twpMachineEvaluations is null) return 0;
+        var count = 0;
+        foreach (var machine in _twpMachineEvaluations)
+        {
+            if (machine.Status != TwistingParkingRegistry.CallVehicleStatus) continue;
+            foreach (var mission in machine.AvailableMissions)
+            {
+                var laneBlockIndex = TwistingLoadLaneAdmission.GetLaneBlockIndex(mission);
+                if (TwistingLoadDispatchTracker.CanDispatchMissionBlock(
+                        _twpInFlightDispatches,
+                        machine.MachineId,
+                        machine.Side,
+                        machine.TwpGroupId,
+                        laneBlockIndex,
+                        mission.Select(s => s.ParkingPointId),
+                        machine.AvailableMissions,
+                        _twpMachineEvaluations,
+                        machine.DockingPoints,
+                        _lastFleetStatuses))
+                    count++;
+            }
+        }
+        return count;
+    }
+
+    int TwpActiveInFlightCount =>
+        _twpInFlightDispatches.Count(f => f.IsActive);
+
+    IReadOnlyList<TwistingLoadInFlight> TwpActiveInFlightTasks =>
+        _twpInFlightDispatches.Where(f => f.IsActive).ToList();
+
+    bool IsAmrBusy(string amrCode) =>
+        CakeVehicleDispatchEvaluator.IsAmrInBusySet(GetBusyAmrCodes(), amrCode);
+
+    HashSet<string> GetBusyAmrCodes()
+    {
+        var codes = new List<string>();
+        foreach (var f in _inFlightDispatches.Where(f => f.IsActive))
+            codes.Add(f.AmrCode);
+        foreach (var f in _twpInFlightDispatches.Where(f => f.IsActive))
+            codes.Add(f.AmrCode);
+        return CakeVehicleDispatchEvaluator.BuildBusyAmrSet(inFlightAmrCodes: codes);
+    }
+
+    protected override void OnInitialized()
+    {
+        var opts = EquipSimOptions.Value;
+        _modbusHost = opts.DefaultModbusHost;
+        _modbusPort = opts.DefaultModbusPort;
+        _unitId = opts.DefaultUnitId;
+        _catalog = CatalogService.BuildCatalog();
+        _pollCts = new CancellationTokenSource();
+        _ = ModbusPollLoopAsync(_pollCts.Token);
+        _ = TgiPollLoopAsync(_pollCts.Token);
+    }
+
+    async Task ModbusPollLoopAsync(CancellationToken ct)
+    {
+        await PollModbusOnceAsync();
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(ModbusPollIntervalMs));
+        while (await timer.WaitForNextTickAsync(ct))
+        {
+            if (_autoRefresh && !_modbusBusy)
+                await PollModbusOnceAsync();
+        }
+    }
+
+    async Task TgiPollLoopAsync(CancellationToken ct)
+    {
+        await PollTgiOnceAsync();
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(TgiPollIntervalMs));
+        while (await timer.WaitForNextTickAsync(ct))
+        {
+            if (_autoRefresh && !_tgiBusy)
+                await PollTgiOnceAsync();
+        }
+    }
+
+    async Task RefreshNowAsync()
+    {
+        await PollModbusOnceAsync();
+        await PollTgiOnceAsync();
+    }
+
+    async Task PollModbusOnceAsync()
+    {
+        if (_catalog is null || _modbusBusy) return;
+        _modbusBusy = true;
+        try
+        {
+            var snap = await PollService.PollSnapshotAsync(
+                _catalog, _modbusHost.Trim(), _modbusPort, (byte)_unitId,
+                ModbusTimeoutMs, _pollCts?.Token ?? default);
+            _snapshot = snap;
+            if (snap.Success)
+            {
+                _bufferEvaluations = BufferDispatchEvaluator.ApplyParkingOccupancy(
+                    BufferDispatchEvaluator.EvaluateAll(snap),
+                    _lastFleetStatuses);
+                _twpMachineEvaluations = TwistingLoadDispatchEvaluator.EvaluateAll(snap);
+                RefreshInFlightStatus();
+                RefreshTwistingInFlightStatus();
+                RecomputePairings();
+                RecomputeTwistingPairings();
+            }
+
+            await InvokeAsync(StateHasChanged);
+        }
+        finally
+        {
+            _modbusBusy = false;
+        }
+    }
+
+    async Task PollTgiOnceAsync()
+    {
+        if (_tgiBusy) return;
+        _tgiBusy = true;
+        try
+        {
+            await RefreshAmrAndPairAsync();
+
+            if (_dispatchMode == "auto")
+                await TryAutoDispatchAsync();
+
+            if (_twpDispatchMode == "auto")
+                await TryTwpAutoDispatchAsync();
+
+            await InvokeAsync(StateHasChanged);
+        }
+        finally
+        {
+            _tgiBusy = false;
+        }
+    }
+
+    void RecomputePairings()
+    {
+        if (_bufferEvaluations is null) return;
+        var buffers = DispatchableBuffers
+            .Where(b => !BufferDispatchTracker.IsBufferLocked(_inFlightDispatches, b.ParkingPointId))
+            .ToList();
+        var busy = GetBusyAmrCodes();
+        _pairings = BufferDispatchPairingService.Pair(buffers, _cakeVehicles, busy);
+    }
+
+    void RecomputeTwistingPairings()
+    {
+        if (_twpMachineEvaluations is null) return;
+        var machines = _twpMachineEvaluations
+            .Where(m => m.Status == TwistingParkingRegistry.CallVehicleStatus && m.AvailableMissions.Count > 0)
+            .ToList();
+        var busyAmrs = GetBusyAmrCodes();
+        var vehicles = _twpCakeVehicles
+            .Where(v => v.IsEligible && !CakeVehicleDispatchEvaluator.IsAmrInBusySet(busyAmrs, v.AmrCode))
+            .ToList();
+        _twpPairings = TwistingLoadPairingService.Pair(machines, vehicles, _twpInFlightDispatches, _lastFleetStatuses);
+    }
+
+    void RefreshInFlightStatus()
+    {
+        var previous = _inFlightDispatches.ToList();
+        var updated = BufferDispatchTracker.Refresh(
+            _inFlightDispatches, _lastRobots, _bufferEvaluations);
+
+        foreach (var done in updated.Where(f => f.IsCompleted))
+        {
+            var wasActive = previous.Any(p =>
+                p.IsActive &&
+                p.TaskId.Equals(done.TaskId, StringComparison.OrdinalIgnoreCase));
+            if (wasActive)
+                AppendCompletionLog(done);
+        }
+
+        _inFlightDispatches.Clear();
+        _inFlightDispatches.AddRange(BufferDispatchTracker.PruneCompleted(updated));
+    }
+
+    void RefreshTwistingInFlightStatus()
+    {
+        var previous = _twpInFlightDispatches.ToList();
+        var updated = TwistingLoadDispatchTracker.Refresh(
+            _twpInFlightDispatches, _lastRobots, _twpMachineEvaluations, _lastFleetStatuses);
+
+        foreach (var done in updated.Where(f => f.IsCompleted))
+        {
+            var wasActive = previous.Any(p =>
+                p.IsActive &&
+                p.MissionKey.Equals(done.MissionKey, StringComparison.OrdinalIgnoreCase));
+            if (wasActive)
+                AppendTwpCompletionLog(done);
+        }
+
+        _twpInFlightDispatches.Clear();
+        _twpInFlightDispatches.AddRange(TwistingLoadDispatchTracker.PruneCompleted(updated));
+    }
+
+    void AppendCompletionLog(BufferDispatchInFlight flight)
+    {
+        _dispatchLogs.Insert(0, new BufferDispatchLogEntry(
+            DateTime.Now,
+            flight.ParkingPointId,
+            flight.AmrCode,
+            true,
+            $"任務完成：{flight.StatusHint}",
+            null,
+            null));
+    }
+
+    void AppendTwpCompletionLog(TwistingLoadInFlight flight)
+    {
+        _twpDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+            DateTime.Now,
+            flight.MissionKey,
+            flight.AmrCode,
+            true,
+            $"任務完成：{flight.StatusHint}",
+            null,
+            null));
+    }
+
+    int _tgiRobotReportCount;
+
+    async Task RefreshAmrAndPairAsync()
+    {
+        if (!await EnsureTokenAsync()) return;
+
+        try
+        {
+            var ct = _pollCts?.Token ?? default;
+            var robotResult = await AmrApi.PollRobotsStatusAsync(_token!, ct);
+            if (!robotResult.Success)
+            {
+                _amrError = ApiErrorFormatter.FromMessage(robotResult.Error, "無法取得 /v2/robots/status");
+                if (ShouldInvalidateTgiToken(robotResult.Error))
+                    InvalidateTgiSession();
+                return;
+            }
+
+            var taskResult = await AmrApi.PollActiveSimulationTasksAsync(_token!, ct);
+            var simResult = await AmrApi.PollSimulationAmrsAsync(_token!, ct);
+            var fleetResult = await AmrApi.PollFleetStatusAsync(_token!, ct);
+            var wpResult = await AmrApi.GetWaitPointStatusAsync(_token!, ct);
+
+            var activeTasks = taskResult.Success ? taskResult.Data : [];
+            var simulationAmrs = simResult.Success ? simResult.Data : null;
+            var waitPoints = wpResult.Success
+                ? FleetParkingPlanner.GetWaitPointList(wpResult.Data ?? [])
+                : [];
+            var fleetStatuses = fleetResult.Success ? fleetResult.Data : null;
+            if (fleetStatuses is not null)
+                _lastFleetStatuses = fleetStatuses;
+
+            _tgiRobotReportCount = robotResult.Data.Count;
+            _lastRobots = robotResult.Data;
+            RefreshInFlightStatus();
+            RefreshTwistingInFlightStatus();
+
+            var inFlightAmrCodes = _inFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode)
+                .Concat(_twpInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode));
+            _cakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleet(
+                robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, waitPoints, inFlightAmrCodes);
+            _twpCakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingLoad(
+                robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
+
+            _amrError = null;
+            _lastAmrRefresh = DateTime.Now;
+            if (_bufferEvaluations is not null)
+            {
+                _bufferEvaluations = BufferDispatchEvaluator.ApplyParkingOccupancy(
+                    _bufferEvaluations,
+                    _lastFleetStatuses);
+            }
+            RecomputePairings();
+            RecomputeTwistingPairings();
+        }
+        catch (Exception ex)
+        {
+            _amrError = ApiErrorFormatter.FromException(ex);
+        }
+    }
+
+    static bool ShouldInvalidateTgiToken(string? error) =>
+        error is not null && error.Contains("401", StringComparison.Ordinal);
+
+    void InvalidateTgiSession() => _token = null;
+
+    void SetDispatchModeManual() => _dispatchMode = "manual";
+
+    void SetDispatchModeAuto() => _dispatchMode = "auto";
+
+    void SetTwpDispatchModeManual() => _twpDispatchMode = "manual";
+
+    void SetTwpDispatchModeAuto() => _twpDispatchMode = "auto";
+
+    static bool IsBufferAutoDispatchElapsed(DateTime? lastAt) =>
+        lastAt is null ||
+        (DateTime.Now - lastAt.Value).TotalSeconds >= BufferAutoDispatchIntervalSeconds;
+
+    static bool IsTwpAutoDispatchElapsed(DateTime? lastAt) =>
+        lastAt is null ||
+        (DateTime.Now - lastAt.Value).TotalSeconds >= TwpAutoDispatchIntervalSeconds;
+
+    async Task<bool> TryDispatchNextFlowForInFlightAsync(string sequenceId)
+    {
+        if (string.IsNullOrEmpty(_token)) return false;
+
+        var idx = _twpInFlightDispatches.FindIndex(f =>
+            f.SequenceId.Equals(sequenceId, StringComparison.Ordinal));
+        if (idx < 0) return false;
+
+        var flight = _twpInFlightDispatches[idx];
+        if (flight.IsFullyDispatched) return true;
+
+        if (flight.CompletedStops >= flight.FlowStops.Count)
+            return false;
+
+        var stop = flight.FlowStops[flight.CompletedStops];
+        var ct = _pollCts?.Token ?? default;
+        var result = await AmrApi.TriggerFlowDiagnosticAsync(
+            _token!, TwistingLoadFlowDispatchBuilder.FlowName, stop.FlowRequest, ct);
+        AppendTwpDispatchLog(flight, stop, result);
+
+        if (!result.Success || result.Data is null)
+        {
+            _twpInFlightDispatches[idx] = TwistingLoadDispatchTracker.UpdateProgress(
+                flight,
+                flight.TaskIds,
+                $"{stop.ParkingPointId} 派車失敗，{TwpDispatchRetryDelaySeconds} 秒後重試",
+                nextRetryAt: DateTime.Now.AddSeconds(TwpDispatchRetryDelaySeconds));
+            return false;
+        }
+
+        var taskId = !string.IsNullOrWhiteSpace(result.Data.TaskId)
+            ? result.Data.TaskId
+            : result.Data.FlowId;
+        if (string.IsNullOrWhiteSpace(taskId))
+        {
+            _twpInFlightDispatches[idx] = TwistingLoadDispatchTracker.UpdateProgress(
+                flight,
+                flight.TaskIds,
+                $"{stop.ParkingPointId} 未取得 taskId，{TwpDispatchRetryDelaySeconds} 秒後重試",
+                nextRetryAt: DateTime.Now.AddSeconds(TwpDispatchRetryDelaySeconds));
+            return false;
+        }
+
+        var taskIds = flight.TaskIds.ToList();
+        taskIds.Add(taskId);
+        var now = DateTime.Now;
+        var enteredLane = TwistingLoadLaneAdmission.HasFlightEnteredLane(flight, _lastFleetStatuses);
+        var laneLabel = TwistingLoadLaneAdmission.FormatTwpLane(flight.TwpGroupId);
+        var fleet = TwistingLoadLaneAdmission.ResolveFleetVehicle(_lastFleetStatuses, flight.AmrCode);
+        var hint = taskIds.Count < flight.TotalFlows
+            ? enteredLane
+                ? $"已派 {taskIds.Count}/{flight.TotalFlows} flow · 已開放 {laneLabel} 下一組派車"
+                : $"已派 {taskIds.Count}/{flight.TotalFlows} flow · 等待 {flight.AmrCode} 開進 {laneLabel}（目前 {fleet?.CurrentSite ?? "—"}）"
+            : $"已派車 {flight.TotalFlows}/{flight.TotalFlows} flow，等待作業完成";
+
+        _twpInFlightDispatches[idx] = TwistingLoadDispatchTracker.UpdateProgress(
+            flight,
+            taskIds,
+            hint,
+            lastFlowDispatchedAt: now,
+            nextRetryAt: null,
+            hasEnteredLane: enteredLane);
+        RefreshTwistingInFlightStatus();
+        RecomputeTwistingPairings();
+        return true;
+    }
+
+    bool GetTwpPairCanDispatch(TwistingLoadDispatchPair pair) => CanStartTwpPair(pair);
+
+    string? GetTwpPairBlockReason(TwistingLoadDispatchPair pair)
+    {
+        if (CanStartTwpPair(pair)) return null;
+
+        var machine = ResolveTwpMachineEvaluation(pair.Machine.MachineId, pair.Machine.Side);
+        var blockIndex = TwistingLoadLaneAdmission.GetLaneBlockIndex(pair.MissionStops);
+        return TwistingLoadDispatchTracker.TryGetDispatchBlockReason(
+            _twpInFlightDispatches,
+            pair.Machine.MachineId,
+            pair.Machine.Side,
+            pair.Machine.TwpGroupId,
+            blockIndex,
+            pair.MissionStops.Select(s => s.ParkingPointId),
+            machine?.AvailableMissions ?? pair.Machine.AvailableMissions,
+            _twpMachineEvaluations,
+            machine?.DockingPoints ?? pair.Machine.DockingPoints,
+            _lastFleetStatuses);
+    }
+
+    TwistingLoadMachineEvaluation? ResolveTwpMachineEvaluation(int machineId, char side) =>
+        _twpMachineEvaluations?.FirstOrDefault(m =>
+            m.MachineId == machineId &&
+            char.ToUpperInvariant(m.Side) == char.ToUpperInvariant(side));
+
+    bool CanStartTwpPair(TwistingLoadDispatchPair pair)
+    {
+        var machine = ResolveTwpMachineEvaluation(pair.Machine.MachineId, pair.Machine.Side);
+        var blockIndex = TwistingLoadLaneAdmission.GetLaneBlockIndex(pair.MissionStops);
+        return TwistingLoadDispatchTracker.CanDispatchMissionBlock(
+            _twpInFlightDispatches,
+            pair.Machine.MachineId,
+            pair.Machine.Side,
+            pair.Machine.TwpGroupId,
+            blockIndex,
+            pair.MissionStops.Select(s => s.ParkingPointId),
+            machine?.AvailableMissions ?? pair.Machine.AvailableMissions,
+            _twpMachineEvaluations,
+            machine?.DockingPoints ?? pair.Machine.DockingPoints,
+            _lastFleetStatuses);
+    }
+
+    async Task TryAutoDispatchAsync()
+    {
+        if (_pairings is null || _pairings.Count == 0 || _dispatchBusy || string.IsNullOrEmpty(_token)) return;
+        if (!IsBufferAutoDispatchElapsed(_lastBufferAutoFlowAt)) return;
+
+        _dispatchBusy = true;
+        try
+        {
+            var pair = _pairings.FirstOrDefault(p =>
+                !IsAmrBusy(p.Vehicle.AmrCode)
+                && !BufferDispatchEvaluator.IsParkingPointOccupied(
+                    _lastFleetStatuses, p.Buffer.ParkingPointId, out _));
+            if (pair is null) return;
+
+            var result = await AmrApi.TriggerFlowDiagnosticAsync(
+                _token!, pair.FlowName, pair.FlowRequest, _pollCts?.Token ?? default);
+            _lastBufferAutoFlowAt = DateTime.Now;
+            HandleDispatchResult(pair, result);
+        }
+        finally
+        {
+            _dispatchBusy = false;
+        }
+    }
+
+    async Task TryTwpAutoDispatchAsync()
+    {
+        if (_twpDispatchBusy || string.IsNullOrEmpty(_token)) return;
+        if (_twpPairings is null || _twpPairings.Count == 0) return;
+        if (!IsTwpAutoDispatchElapsed(_lastTwpAutoFlowAt)) return;
+
+        var pair = _twpPairings.FirstOrDefault(GetTwpPairCanDispatch);
+        if (pair is null) return;
+
+        _twpDispatchBusy = true;
+        try
+        {
+            _lastTwpAutoFlowAt = DateTime.Now;
+            await DispatchTwpPairCoreAsync(pair);
+        }
+        finally
+        {
+            _twpDispatchBusy = false;
+        }
+    }
+
+    async Task DispatchTwpPairManualAsync(TwistingLoadDispatchPair pair)
+    {
+        if (!await EnsureTokenAsync()) return;
+        if (!CanStartTwpPair(pair))
+        {
+            _twpDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+                DateTime.Now,
+                $"{pair.Machine.MissionKey} · {TwistingLoadMissionPlanner.FormatMissionStops(pair.MissionStops)}",
+                pair.Vehicle.AmrCode,
+                false,
+                GetTwpPairBlockReason(pair) ?? "暫不可派車",
+                null,
+                null));
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        _twpDispatchBusy = true;
+        try
+        {
+            await DispatchTwpPairCoreAsync(pair);
+        }
+        finally
+        {
+            _twpDispatchBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    async Task DispatchTwpPairCoreAsync(TwistingLoadDispatchPair pair)
+    {
+        if (string.IsNullOrEmpty(_token)) return;
+
+        var sequenceId = Guid.NewGuid().ToString("N");
+        _twpInFlightDispatches.Add(TwistingLoadDispatchTracker.Register(pair, sequenceId, []));
+        RecomputeTwistingPairings();
+
+        var ct = _pollCts?.Token ?? default;
+        while (true)
+        {
+            var flight = _twpInFlightDispatches.FirstOrDefault(f =>
+                f.SequenceId.Equals(sequenceId, StringComparison.Ordinal));
+            if (flight is null || flight.IsFullyDispatched) break;
+            if (ct.IsCancellationRequested) break;
+
+            if (flight.NextRetryAt is not null)
+            {
+                var waitMs = (int)(flight.NextRetryAt.Value - DateTime.Now).TotalMilliseconds;
+                if (waitMs > 0)
+                    await Task.Delay(waitMs, ct);
+            }
+
+            await TryDispatchNextFlowForInFlightAsync(sequenceId);
+        }
+
+        RefreshTwistingInFlightStatus();
+    }
+
+    void AppendTwpDispatchLog(
+        TwistingLoadInFlight flight,
+        TwistingLoadFlowStop stop,
+        ApiCallResult result)
+    {
+        _twpDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+            DateTime.Now,
+            $"{flight.MissionKey} · {stop.ParkingPointId} (#{stop.StopIndex})",
+            flight.AmrCode,
+            result.Success,
+            result.Summary,
+            stop.JsonBody,
+            result.ResponseBody));
+    }
+
+    Task ClearTwpDispatchLogsAsync()
+    {
+        _twpDispatchLogs.Clear();
+        return InvokeAsync(StateHasChanged);
+    }
+
+    async Task DispatchPairManualAsync(BufferDispatchPair pair)
+    {
+        if (!await EnsureTokenAsync()) return;
+        if (IsAmrBusy(pair.Vehicle.AmrCode))
+        {
+            _dispatchLogs.Insert(0, new BufferDispatchLogEntry(
+                DateTime.Now,
+                pair.Buffer.ParkingPointId,
+                pair.Vehicle.AmrCode,
+                false,
+                "暫不可派車：此車已在任務中",
+                null,
+                null));
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        if (BufferDispatchEvaluator.IsParkingPointOccupied(
+                _lastFleetStatuses, pair.Buffer.ParkingPointId, out var parkedRobot))
+        {
+            _dispatchLogs.Insert(0, new BufferDispatchLogEntry(
+                DateTime.Now,
+                pair.Buffer.ParkingPointId,
+                pair.Vehicle.AmrCode,
+                false,
+                $"暫不可派車：{pair.Buffer.ParkingPointId} 已有 {parkedRobot} 停靠",
+                null,
+                null));
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        _dispatchBusy = true;
+        try
+        {
+            var result = await AmrApi.TriggerFlowDiagnosticAsync(
+                _token!, pair.FlowName, pair.FlowRequest, _pollCts?.Token ?? default);
+            HandleDispatchResult(pair, result);
+        }
+        finally
+        {
+            _dispatchBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    void HandleDispatchResult(BufferDispatchPair pair, ApiCallResult<TriggerFlowResultDto> result)
+    {
+        AppendDispatchLog(pair, result);
+        if (!result.Success || result.Data is null) return;
+
+        var taskId = !string.IsNullOrWhiteSpace(result.Data.TaskId)
+            ? result.Data.TaskId
+            : result.Data.FlowId;
+        if (string.IsNullOrWhiteSpace(taskId)) return;
+
+        _inFlightDispatches.Add(BufferDispatchTracker.Register(
+            pair.Buffer.ParkingPointId,
+            pair.Vehicle.AmrCode,
+            taskId,
+            pair.Buffer.OperationSideLabel));
+        RefreshInFlightStatus();
+        RecomputePairings();
+    }
+
+    void AppendDispatchLog(BufferDispatchPair pair, ApiCallResult result)
+    {
+        _dispatchLogs.Insert(0, new BufferDispatchLogEntry(
+            DateTime.Now,
+            pair.Buffer.ParkingPointId,
+            pair.Vehicle.AmrCode,
+            result.Success,
+            result.Summary,
+            pair.JsonBody,
+            result.ResponseBody));
+    }
+
+    Task ClearDispatchLogsAsync()
+    {
+        _dispatchLogs.Clear();
+        return InvokeAsync(StateHasChanged);
+    }
+
+    async Task<bool> EnsureTokenAsync()
+    {
+        if (!string.IsNullOrEmpty(_token)) return true;
+
+        var login = await AmrApi.LoginAsync(_pollCts?.Token ?? default);
+        if (login.Success && login.Data is not null)
+        {
+            _token = login.Data.AccessToken;
+            _amrError = null;
+            return true;
+        }
+
+        _token = null;
+        _amrError = ApiErrorFormatter.FromMessage(login.Summary, "TGI 登入失敗");
+        return false;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_pollCts is not null)
+        {
+            await _pollCts.CancelAsync();
+            _pollCts.Dispose();
+        }
+    }
+}

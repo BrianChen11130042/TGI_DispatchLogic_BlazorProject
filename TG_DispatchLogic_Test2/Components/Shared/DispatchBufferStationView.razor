@@ -1,0 +1,115 @@
+@using TG_DispatchLogic_Test2.Models
+
+<div class="parking-cat-card parking-cat-buffer dispatch-buffer-ref-card @CardClass @(_expanded ? "is-expanded" : "")">
+    <button type="button" class="dispatch-ref-toggle" @onclick="Toggle">
+        <div class="dispatch-ref-toggle-main">
+            <div class="dispatch-ref-title-row">
+                <strong>@Evaluation.StationCode</strong>
+                <span class="equip-badge equip-badge-info">@Evaluation.ParkingPointId</span>
+                <span class="dispatch-status-badge @StatusBadgeClass">@StatusBadgeText</span>
+            </div>
+            <div class="parking-cat-muted small dispatch-ref-toggle-summary">
+                @if (Evaluation.HasOperationSide)
+                {
+                    <text>
+                        作業面 <strong>@Evaluation.OperationSideLabel</strong> 側 ·
+                        @Evaluation.OperationSidePresentCount/@Evaluation.OperationSidePortCount Port 有料 ·
+                        Addr @opSide.BaseAddress~@opSide.AddressEnd
+                    </text>
+                }
+                else
+                {
+                    <text>@Evaluation.Reason</text>
+                }
+                @if (InFlight is { IsActive: true })
+                {
+                    <text> · @InFlight.AmrCode · @InFlight.StatusHint</text>
+                }
+            </div>
+        </div>
+        <span class="dispatch-ref-chevron">@(_expanded ? "▲ 收合" : "▼ 展開明細")</span>
+    </button>
+
+    @if (_expanded && Evaluation.HasOperationSide)
+    {
+        <div class="parking-cat-card-body dispatch-ref-body">
+            <div class="parking-cat-muted small mono dispatch-ref-meta">
+                Base Addr @Meta.BaseAddress · 作業面 Addr @Meta.OperationSideAddress ·
+                機 1~12 · 臂 1~12
+            </div>
+            <div class="dispatch-ref-side-label">
+                <span class="equip-badge equip-badge-call">@Evaluation.OperationSideLabel 側 作業面</span>
+            </div>
+
+            <table class="parking-cat-table dispatch-ref-table">
+                <thead>
+                    <tr>
+                        <th>機台 Port</th>
+                        <th>手臂 Port</th>
+                        <th>Addr</th>
+                        <th>料況</th>
+                        <th>Modbus 值</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var port in Evaluation.OperationSidePorts)
+                    {
+                        <tr>
+                            <td class="fw-bold">@port.PortNumber</td>
+                            <td class="fw-bold equip-hint-blue">@port.ArmPortNumber</td>
+                            <td class="mono">@port.Address</td>
+                            <td>
+                                <span class="dispatch-material-tag @(port.HasMaterial ? "has" : "empty")">
+                                    @(port.HasMaterial ? "有" : "無")
+                                </span>
+                            </td>
+                            <td class="mono">@port.RawValue</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            <div class="parking-cat-muted small dispatch-ref-legend">Modbus 值：0=無料 · 1=有料</div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public BufferStationMeta Meta { get; set; } = default!;
+    [Parameter, EditorRequired] public BufferDispatchEvaluation Evaluation { get; set; } = default!;
+    [Parameter] public BufferDispatchInFlight? InFlight { get; set; }
+
+    bool _expanded;
+
+    BufferSideMeta opSide => Evaluation.IsOperationSideA ? Meta.SideA : Meta.SideB;
+
+    string StatusBadgeClass
+    {
+        get
+        {
+            if (InFlight is { IsActive: true }) return "busy";
+            if (Evaluation.IsDispatchable) return "ok";
+            return Evaluation.HasOperationSide ? "warn" : "wait";
+        }
+    }
+
+    string StatusBadgeText
+    {
+        get
+        {
+            if (InFlight is { IsActive: true }) return "作業中";
+            if (Evaluation.IsDispatchable) return "可派車";
+            return Evaluation.HasOperationSide ? "不可派車" : "未設定";
+        }
+    }
+
+    string CardClass
+    {
+        get
+        {
+            if (InFlight is { IsActive: true }) return "in-flight";
+            return Evaluation.IsDispatchable ? "" : "not-dispatchable";
+        }
+    }
+
+    void Toggle() => _expanded = !_expanded;
+}

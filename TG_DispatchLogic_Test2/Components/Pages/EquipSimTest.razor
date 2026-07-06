@@ -1,0 +1,474 @@
+@page "/equip-sim-test"
+@page "/modbus-tcp-test"
+@rendermode InteractiveServer
+@inject SimulateCodeCatalogService CatalogService
+@inject ModbusEquipPollService PollService
+@inject IOptions<EquipSimOptions> EquipSimOptions
+@using Microsoft.Extensions.Options
+@using TG_DispatchLogic_Test2.Models
+@using TG_DispatchLogic_Test2.Services
+@implements IAsyncDisposable
+
+<PageTitle>Equip 模擬軟體測試</PageTitle>
+
+<div class="page-content equip-sim-page">
+    <PageHeader Title="Equip 模擬軟體測試"
+                Subtitle="@(_sourceMode == "modbus"
+                    ? "Modbus TCP 即時監控（每秒更新）· 對照 SimulateCode 料況畫面"
+                    : "SimulateCode 停車對照 REST API 測試")" />
+
+    <div class="equip-source-tab-bar">
+        <button type="button"
+                class="equip-source-tab @(_sourceMode == "modbus" ? "active" : "")"
+                @onclick='() => _sourceMode = "modbus"'>
+            Modbus TCP 機台狀態
+        </button>
+        <button type="button"
+                class="equip-source-tab @(_sourceMode == "api" ? "active" : "")"
+                @onclick='() => _sourceMode = "api"'>
+            SimulateCode API 停車對照
+        </button>
+    </div>
+
+    @if (_sourceMode == "api")
+    {
+        <EquipSimParkingApiPanel />
+    }
+    else
+    {
+    <div class="equip-sim-toolbar">
+        <div class="equip-sim-conn">
+            <label>IP</label>
+            <DxTextBox @bind-Text="_modbusHost" CssClass="equip-sim-input" />
+            <label>Port</label>
+            <DxSpinEdit @bind-Value="_modbusPort" MinValue="1" MaxValue="65535" CssClass="equip-sim-spin" />
+            <label>Unit ID</label>
+            <DxSpinEdit @bind-Value="_unitId" MinValue="0" MaxValue="255" CssClass="equip-sim-spin" />
+        </div>
+        <div class="equip-sim-status">
+            <span class="equip-live-dot @(_snapshot?.Success == true ? "is-ok" : "is-err")"></span>
+            @if (_snapshot?.Success == true)
+            {
+                <span>已連線 · @_snapshot.ElapsedMs ms · @_snapshot.PolledAt.ToString("HH:mm:ss")</span>
+            }
+            else if (_pollBusy && _snapshot is null)
+            {
+                <span>連線中…</span>
+            }
+            else
+            {
+                <span class="text-danger">@(_snapshot?.Error ?? "尚未讀取")</span>
+            }
+            <DxCheckBox @bind-Checked="_autoRefresh">每秒更新</DxCheckBox>
+        </div>
+    </div>
+
+    <div class="equip-tab-bar">
+        @foreach (var tab in _mainTabs)
+        {
+            <button type="button"
+                    class="equip-tab-btn @(_mainTab == tab.Key ? "active" : "")"
+                    @onclick="() => _mainTab = tab.Key">
+                @tab.Label
+            </button>
+        }
+    </div>
+
+    @if (_snapshot is null)
+    {
+        <p class="api-test-hint">正在讀取 Modbus 資料…</p>
+    }
+    else if (_mainTab == "buffer")
+    {
+        <div class="equip-panel-hint">
+            綠色=有料 · 灰色=無料 · 藍框=作業面 · 上=機台料況 · 下<span class="equip-hint-blue">藍</span>=手臂 Port 號
+        </div>
+        @foreach (var s in _snapshot.Buffers)
+        {
+            var meta = BufferParkingRegistry.Get(s.StationId);
+            if (meta is null) continue;
+
+            <div class="equip-card equip-buffer-card">
+                <div class="equip-card-head">
+                    <strong>@meta.StationCode</strong>
+                    <span class="equip-badge equip-badge-info">@meta.ParkingPointId</span>
+                    <span class="equip-badge equip-badge-ok">有: @(s.PresentCountA + s.PresentCountB)</span>
+                    <span class="equip-badge equip-badge-muted">無: @(24 - s.PresentCountA - s.PresentCountB)</span>
+                    @if (s.OperationSide != 0)
+                    {
+                        <span class="equip-badge equip-badge-call">
+                            作業面: @(s.OperationSide == 1 ? "A" : "B") 側 (Addr @s.OperationSideAddress)
+                        </span>
+                    }
+                    else
+                    {
+                        <span class="equip-badge equip-badge-muted">作業面: 未設定</span>
+                    }
+                </div>
+                <div class="equip-buffer-sides">
+                    @RenderBufferSide(s, meta.SideA, s.SideA, s.IsSideAOperation, s.PresentCountA)
+                    @RenderBufferSide(s, meta.SideB, s.SideB, s.IsSideBOperation, s.PresentCountB)
+                </div>
+            </div>
+        }
+    }
+    else if (_mainTab == "twisting")
+    {
+        <div class="equip-subtab-bar">
+            @for (var p = 0; p < _twistPages.Length; p++)
+            {
+                var idx = p;
+                <button type="button"
+                        class="equip-tab-btn small @(_twistPage == idx ? "active" : "")"
+                        @onclick="() => _twistPage = idx">
+                    @_twistPages[idx].Label
+                </button>
+            }
+        </div>
+        <div class="equip-panel-hint">
+            狀態 Register：8000~8034 ·
+            <span class="equip-legend equip-mcard-full"></span> 全有絲
+            <span class="equip-legend equip-mcard-nothread"></span> 全無絲
+            <span class="equip-legend equip-mcard-empty"></span> 全空
+            <span class="equip-legend equip-mcard-run"></span> 撚紗中
+            · 點卡片展開明細
+        </div>
+        <div class="equip-machine-grid">
+            @foreach (var m in VisibleMachines())
+            {
+                var selected = _selectedMachineId == m.MachineId;
+                <div class="equip-machine-card @EquipSimUiHelper.MachineCardBorder(m) @(selected ? "selected" : "")"
+                     @onclick="() => ToggleMachine(m.MachineId)">
+                    <div class="equip-mcard-title">@m.MachineCode</div>
+                    <div class="equip-mcard-stats">
+                        <span class="dot-green" title="Cake有絲">●@m.CakeHasThread</span>
+                        <span class="dot-yellow" title="Cake無絲">●@m.CakeNoThread</span>
+                        <span class="dot-gray" title="Cake空">●@m.CakeEmpty</span>
+                    </div>
+                    <div class="equip-mcard-stats small">
+                        <span class="dot-cyan" title="Bobbin有絲">B有:@m.BobbinHasThread</span>
+                        <span class="dot-gray" title="Bobbin空">空:@m.BobbinEmpty</span>
+                    </div>
+                    <span class="equip-badge @EquipSimUiHelper.MachineStatusBadgeCss(m.Status)"
+                          title="Modbus Addr @m.StatusAddress = @m.Status">
+                        @EquipSimUiHelper.MachineStatusShort(m.Status)
+                    </span>
+                    <div class="equip-mcard-addr mono">St:@m.StatusAddress</div>
+                </div>
+            }
+        </div>
+
+        @if (_selectedMachineId is int mid && _snapshot.Machines.FirstOrDefault(x => x.MachineId == mid) is { } sel)
+        {
+            <div class="equip-card equip-detail-card">
+                <div class="equip-card-head">
+                    <strong>@sel.MachineCode</strong>
+                    <span class="equip-badge @EquipSimUiHelper.MachineStatusBadgeCss(sel.Status)">
+                        @EquipSimUiHelper.MachineStatusLabel(sel.Status)
+                    </span>
+                    <button type="button" class="equip-close-btn" @onclick="() => _selectedMachineId = null">關閉 ✕</button>
+                </div>
+                @if (sel.Detail is not null)
+                {
+                    <div class="equip-modbus-summary equip-modbus-twist">
+                        <div class="equip-modbus-card">
+                            <div class="equip-modbus-label">機台狀態</div>
+                            <div class="equip-modbus-value mono">@sel.StatusAddress</div>
+                            <div class="equip-modbus-raw">=@sel.Status</div>
+                        </div>
+                        <div class="equip-modbus-card">
+                            <div class="equip-modbus-label">Cake 摘要</div>
+                            <div class="equip-modbus-value mono">@(9000 + sel.MachineId - 1)</div>
+                            <div class="equip-modbus-raw">=@sel.CakeSummary</div>
+                        </div>
+                        <div class="equip-modbus-card">
+                            <div class="equip-modbus-label">Bobbin 摘要</div>
+                            <div class="equip-modbus-value mono">@(9100 + sel.MachineId - 1)</div>
+                            <div class="equip-modbus-raw">=@sel.BobbinSummary</div>
+                        </div>
+                        <div class="equip-modbus-card wide">
+                            <div class="equip-modbus-label">Port 料況</div>
+                            <div class="equip-modbus-value mono small">
+                                C @sel.Detail.SideA.CakeBaseAddress~@(sel.Detail.SideA.CakeBaseAddress + 183)
+                            </div>
+                            <div class="equip-modbus-value mono small">
+                                B @sel.Detail.SideA.BobbinBaseAddress~@(sel.Detail.SideA.BobbinBaseAddress + 183)
+                            </div>
+                        </div>
+                    </div>
+                    <div class="equip-detail-grid">
+                        <div>
+                            <div class="equip-side-title equip-side-title-center">
+                                Cake A 側 <span class="mono">@sel.Detail.SideA.CakeBaseAddress~@sel.Detail.SideA.CakeAddressEnd</span>
+                                @if (sel.MachineId > 1)
+                                {
+                                    <span class="equip-badge equip-badge-info">左側與 M@((sel.MachineId - 1).ToString("D2"))-B 共用</span>
+                                }
+                            </div>
+                            <EquipSimPortGrid Side="sel.Detail.SideA" PortType="Cake" GetValue="@(a => Addr(a))" />
+                        </div>
+                        <div>
+                            <div class="equip-side-title equip-side-title-center">
+                                Cake B 側 <span class="mono">@sel.Detail.SideB.CakeBaseAddress~@sel.Detail.SideB.CakeAddressEnd</span>
+                                @if (sel.MachineId < 35)
+                                {
+                                    <span class="equip-badge equip-badge-info">右側與 M@((sel.MachineId + 1).ToString("D2"))-A 共用</span>
+                                }
+                            </div>
+                            <EquipSimPortGrid Side="sel.Detail.SideB" PortType="Cake" GetValue="@(a => Addr(a))" />
+                        </div>
+                        <div>
+                            <div class="equip-side-title equip-side-title-center">
+                                Bobbin A 側 <span class="mono">@sel.Detail.SideA.BobbinBaseAddress~@sel.Detail.SideA.BobbinAddressEnd</span>
+                                <span class="equip-badge equip-badge-muted">機 @sel.Detail.SideA.PortNumberStart~@sel.Detail.SideA.PortNumberEnd · 臂 @sel.Detail.SideA.ArmPortNumberStart~@sel.Detail.SideA.ArmPortNumberEnd</span>
+                            </div>
+                            <EquipSimPortGrid Side="sel.Detail.SideA" PortType="Bobbin" GetValue="@(a => Addr(a))" />
+                        </div>
+                        <div>
+                            <div class="equip-side-title equip-side-title-center">
+                                Bobbin B 側 <span class="mono">@sel.Detail.SideB.BobbinBaseAddress~@sel.Detail.SideB.BobbinAddressEnd</span>
+                                <span class="equip-badge equip-badge-muted">機 @sel.Detail.SideB.PortNumberStart~@sel.Detail.SideB.PortNumberEnd · 臂 @sel.Detail.SideB.ArmPortNumberStart~@sel.Detail.SideB.ArmPortNumberEnd</span>
+                            </div>
+                            <EquipSimPortGrid Side="sel.Detail.SideB" PortType="Bobbin" GetValue="@(a => Addr(a))" />
+                        </div>
+                    </div>
+                    <div class="equip-port-legend">
+                        <span><i class="equip-port-cell equip-port-empty"></i> 空(0)</span>
+                        <span><i class="equip-port-cell equip-port-no-thread"></i> 無絲(1)</span>
+                        <span><i class="equip-port-cell equip-port-has-thread"></i> 有絲(2)</span>
+                        <span><i class="equip-port-cell equip-port-error"></i> 異常(9)</span>
+                        <span class="equip-legend-muted">| 上=機台Port · 下<span class="equip-hint-blue">藍</span>=手臂Port</span>
+                    </div>
+                }
+            </div>
+        }
+    }
+    else if (_mainTab == "clearing")
+    {
+        <div class="equip-panel-hint">
+            每停靠點 1 Port · 機台/手臂 Port 皆為 1 · 上=機台Port · 下<span class="equip-hint-blue">藍</span>=手臂Port
+        </div>
+        <div class="equip-station-grid">
+            @foreach (var s in _snapshot.Clearing)
+            {
+                var meta = ClearingParkingRegistry.Get(s.StationId);
+                if (meta is null) continue;
+                var label = s.IsPresent ? "有" : "無";
+                var css = s.IsPresent ? "equip-buffer-present" : "equip-buffer-absent";
+                <div class="equip-station-card">
+                    <div class="equip-station-title">
+                        @meta.StationCode
+                        <span class="equip-badge equip-badge-warn">@meta.ParkingPointId</span>
+                    </div>
+                    <EquipSimNamedPortCell
+                        StatusText="@label"
+                        MachinePort="@meta.Port.PortNumber"
+                        ArmPort="@meta.Port.ArmPortNumber"
+                        CssClass="@($"equip-named-port-lg {css}")"
+                        Tooltip="@($"停車點 {meta.ParkingPointId} | 機台 {meta.Port.PortNumber} | 手臂 {meta.Port.ArmPortNumber} | Addr {meta.Port.Address}")" />
+                    <div class="equip-station-state @(s.IsPresent ? "on" : "")">@(s.IsPresent ? "有料" : "無料")</div>
+                    <div class="equip-mcard-addr mono">Addr: @meta.Port.Address</div>
+                    <div class="equip-station-footer @(s.IsPresent ? "info" : "warn")">
+                        @(s.IsPresent ? "清軸完畢 → ES 上料" : "無料 → FS 下料")
+                    </div>
+                </div>
+            }
+        </div>
+    }
+    else if (_mainTab == "packaging")
+    {
+        <div class="equip-panel-hint">
+            每停靠點 1 Port · 機台/手臂 Port 皆為 1 · 上=機台Port · 下<span class="equip-hint-blue">藍</span>=手臂Port
+        </div>
+        <div class="equip-station-grid">
+            @foreach (var s in _snapshot.Packaging)
+            {
+                var meta = PackagingParkingRegistry.Get(s.StationId);
+                if (meta is null) continue;
+                var label = s.IsPresent ? "有" : "無";
+                var css = s.IsPresent ? "equip-buffer-present" : "equip-buffer-absent";
+                <div class="equip-station-card">
+                    <div class="equip-station-title">
+                        @meta.StationCode
+                        <span class="equip-badge equip-badge-ok">@meta.ParkingPointId</span>
+                    </div>
+                    <EquipSimNamedPortCell
+                        StatusText="@label"
+                        MachinePort="@meta.Port.PortNumber"
+                        ArmPort="@meta.Port.ArmPortNumber"
+                        CssClass="@($"equip-named-port-lg {css}")"
+                        Tooltip="@($"停車點 {meta.ParkingPointId} | 機台 {meta.Port.PortNumber} | 手臂 {meta.Port.ArmPortNumber} | Addr {meta.Port.Address}")" />
+                    <div class="equip-station-state @(s.IsPresent ? "on" : "")">@(s.IsPresent ? "有料 (Bobbin)" : "無料")</div>
+                    <div class="equip-mcard-addr mono">Addr: @meta.Port.Address</div>
+                    <div class="equip-station-footer @(s.IsPresent ? "info" : "warn")">
+                        @(s.IsPresent ? "檢驗完畢 → ES 上料" : "無料 → FS 下料")
+                    </div>
+                </div>
+            }
+        </div>
+        <div class="equip-card equip-flow-card">
+            <span class="equip-badge equip-badge-call">撚紗機</span> →
+            <span class="equip-badge equip-badge-ok">AOI 包裝</span>
+            <p class="api-test-hint mb-0 mt-2">Bobbin 由撚紗機產出後，送至 AOI 包裝站檢驗及包裝。</p>
+        </div>
+    }
+    }
+</div>
+
+@code {
+    string _sourceMode = "modbus";
+    string _modbusHost = "";
+    int _modbusPort;
+    int _unitId;
+    bool _autoRefresh = true;
+    bool _pollBusy;
+
+    string _mainTab = "buffer";
+    int _twistPage;
+    int? _selectedMachineId;
+
+    ModbusEquipCatalog? _catalog;
+    EquipSimLiveSnapshot? _snapshot;
+    CancellationTokenSource? _pollCts;
+
+    readonly (string Key, string Label)[] _mainTabs =
+    [
+        ("buffer", "Buffer 區"),
+        ("twisting", "撚紗機"),
+        ("clearing", "清軸"),
+        ("packaging", "AOI 包裝")
+    ];
+
+    readonly (string Label, int From, int To)[] _twistPages =
+    [
+        ("M01–M10", 1, 10),
+        ("M11–M20", 11, 20),
+        ("M21–M30", 21, 30),
+        ("M31–M35", 31, 35)
+    ];
+
+    protected override void OnInitialized()
+    {
+        var opts = EquipSimOptions.Value;
+        _modbusHost = opts.DefaultModbusHost;
+        _modbusPort = opts.DefaultModbusPort;
+        _unitId = opts.DefaultUnitId;
+        _catalog = CatalogService.BuildCatalog();
+        _pollCts = new CancellationTokenSource();
+        _ = PollLoopAsync(_pollCts.Token);
+    }
+
+    async Task PollLoopAsync(CancellationToken ct)
+    {
+        if (_autoRefresh)
+            await PollOnceAsync();
+
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        while (await timer.WaitForNextTickAsync(ct))
+        {
+            if (_sourceMode == "modbus" && _autoRefresh && !_pollBusy)
+                await PollOnceAsync();
+        }
+    }
+
+    async Task PollOnceAsync()
+    {
+        if (_catalog is null) return;
+        _pollBusy = true;
+        try
+        {
+            var snap = await PollService.PollSnapshotAsync(
+                _catalog, _modbusHost.Trim(), _modbusPort, (byte)_unitId);
+            _snapshot = snap;
+            await InvokeAsync(StateHasChanged);
+        }
+        finally
+        {
+            _pollBusy = false;
+        }
+    }
+
+    IEnumerable<MachineLiveSummary> VisibleMachines()
+    {
+        if (_snapshot is null) yield break;
+        var page = _twistPages[_twistPage];
+        foreach (var m in _snapshot.Machines)
+            if (m.MachineId >= page.From && m.MachineId <= page.To)
+                yield return m;
+    }
+
+    void ToggleMachine(int id) =>
+        _selectedMachineId = _selectedMachineId == id ? null : id;
+
+    int Addr(int address) => _snapshot?.GetRaw(address) ?? 0;
+
+    RenderFragment RenderBufferSide(
+        BufferLiveStation live, BufferSideMeta sideMeta, int[] values, bool isOp, int presentCount) => __builder =>
+    {
+        __builder.OpenElement(0, "div");
+        __builder.AddAttribute(1, "class", $"equip-buffer-side {(isOp ? "is-op" : "")}");
+
+        __builder.OpenElement(2, "p");
+        __builder.AddAttribute(3, "class", "equip-buffer-side-title");
+        __builder.AddContent(4, $"{sideMeta.Side} 側 (Addr: {sideMeta.BaseAddress} ~ {sideMeta.AddressEnd})");
+        if (isOp)
+        {
+            __builder.OpenElement(5, "span");
+            __builder.AddAttribute(6, "class", "equip-badge equip-badge-call");
+            __builder.AddContent(7, "作業面");
+            __builder.CloseElement();
+        }
+        __builder.CloseElement();
+
+        __builder.OpenElement(8, "div");
+        __builder.AddAttribute(9, "class", "equip-buffer-port-row");
+        for (var i = 0; i < 12; i++)
+        {
+            var port = sideMeta.Ports[i];
+            var present = BufferLiveStation.IsPresent(values[i]);
+            var css = present ? "equip-buffer-present" : "equip-buffer-absent";
+            var label = present ? "有" : "無";
+            __builder.OpenElement(10, "div");
+            __builder.AddAttribute(11, "class", $"equip-buffer-cell equip-port-named {css}");
+            __builder.AddAttribute(12, "title",
+                $"停車點 {sideMeta.ParkingPointId} | 機台 {port.PortNumber} | 手臂 {port.ArmPortNumber} | Addr {port.Address} | {label}");
+            __builder.OpenElement(13, "span");
+            __builder.AddAttribute(14, "class", "equip-port-status");
+            __builder.AddContent(15, label);
+            __builder.CloseElement();
+            __builder.OpenElement(16, "span");
+            __builder.AddAttribute(17, "class", "equip-port-machine-no");
+            __builder.AddContent(18, port.PortNumber.ToString());
+            __builder.CloseElement();
+            __builder.OpenElement(19, "span");
+            __builder.AddAttribute(20, "class", "equip-port-arm-no");
+            __builder.AddContent(21, port.ArmPortNumber.ToString());
+            __builder.CloseElement();
+            __builder.CloseElement();
+        }
+        __builder.CloseElement();
+
+        __builder.OpenElement(19, "div");
+        __builder.AddAttribute(20, "class", "equip-side-count");
+        __builder.OpenElement(21, "span");
+        __builder.AddAttribute(22, "class", "equip-badge equip-badge-ok");
+        __builder.AddContent(23, $"有: {presentCount}");
+        __builder.CloseElement();
+        __builder.OpenElement(24, "span");
+        __builder.AddAttribute(25, "class", "equip-badge equip-badge-muted");
+        __builder.AddContent(26, $"無: {12 - presentCount}");
+        __builder.CloseElement();
+        __builder.CloseElement();
+
+        __builder.CloseElement();
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_pollCts is not null)
+        {
+            await _pollCts.CancelAsync();
+            _pollCts.Dispose();
+        }
+    }
+}

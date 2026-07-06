@@ -188,6 +188,108 @@ public class AmrApiClient(HttpClient http, IOptions<AmrApiOptions> options)
             cancellationToken);
     }
 
+    /// <summary>輕量輪詢用 — GET /v2/robots/status</summary>
+    public async Task<(bool Success, List<RobotStatusDto> Data, string? Error)> PollRobotsStatusAsync(
+        string accessToken,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken))
+            return (false, [], "尚未登入");
+
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, "v2/robots/status");
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            using var response = await http.SendAsync(req, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                return (false, [], $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+
+            var list = JsonSerializer.Deserialize<List<RobotStatusDto>>(body, JsonOpts) ?? [];
+            return (true, list, null);
+        }
+        catch (TaskCanceledException)
+        {
+            return (false, [], "請求逾時");
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, [], "請求逾時");
+        }
+        catch (Exception ex)
+        {
+            return (false, [], ApiErrorFormatter.FromException(ex));
+        }
+    }
+
+    /// <summary>輕量輪詢用 — GET /api/simulation/tasks/active</summary>
+    public async Task<(bool Success, List<ActiveSimulationTaskDto> Data, string? Error)> PollActiveSimulationTasksAsync(
+        string accessToken,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken))
+            return (false, [], "尚未登入");
+
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, "api/simulation/tasks/active");
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            using var response = await http.SendAsync(req, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                return (false, [], $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+
+            var list = JsonSerializer.Deserialize<List<ActiveSimulationTaskDto>>(body, JsonOpts) ?? [];
+            return (true, list, null);
+        }
+        catch (TaskCanceledException)
+        {
+            return (false, [], "請求逾時");
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, [], "請求逾時");
+        }
+        catch (Exception ex)
+        {
+            return (false, [], ApiErrorFormatter.FromException(ex));
+        }
+    }
+
+    /// <summary>輕量輪詢用 — GET /api/simulation/amrs（補充 DispatchEnabled / SiteCode）</summary>
+    public async Task<(bool Success, List<SimulationAmrDto> Data, string? Error)> PollSimulationAmrsAsync(
+        string accessToken,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken))
+            return (false, [], "尚未登入");
+
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, "api/simulation/amrs");
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            using var response = await http.SendAsync(req, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                return (false, [], $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+
+            var list = JsonSerializer.Deserialize<List<SimulationAmrDto>>(body, JsonOpts) ?? [];
+            return (true, list, null);
+        }
+        catch (TaskCanceledException)
+        {
+            return (false, [], "請求逾時");
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, [], "請求逾時");
+        }
+        catch (Exception ex)
+        {
+            return (false, [], ApiErrorFormatter.FromException(ex));
+        }
+    }
+
     /// <summary>輕量輪詢用 — GET /v2/fleets/status</summary>
     public async Task<(bool Success, List<FleetStatusDto> Data, string? Error)> PollFleetStatusAsync(
         string accessToken,
@@ -208,15 +310,26 @@ public class AmrApiClient(HttpClient http, IOptions<AmrApiOptions> options)
             var list = JsonSerializer.Deserialize<List<FleetStatusDto>>(body, JsonOpts) ?? [];
             return (true, list, null);
         }
-        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (TaskCanceledException)
+        {
+            return (false, [], "請求逾時");
+        }
+        catch (OperationCanceledException)
         {
             return (false, [], "請求逾時");
         }
         catch (Exception ex)
         {
-            return (false, [], DescribeException(ex));
+            return (false, [], ApiErrorFormatter.FromException(ex));
         }
     }
+
+    /// <summary>GET /api/simulation/amrs — AMR 載運件數（Cake / Bobbin 車）</summary>
+    public Task<ApiCallResult<List<SimulationAmrDto>>> GetSimulationAmrsAsync(
+        string accessToken,
+        CancellationToken cancellationToken = default) =>
+        GetAuthorizedListAsync<SimulationAmrDto>(
+            "api/simulation/amrs", accessToken, "AMR 模擬車輛", cancellationToken);
 
     /// <summary>GET /api/simulation/tasks/active — 進行中模擬任務</summary>
     public Task<ApiCallResult<List<ActiveSimulationTaskDto>>> GetActiveSimulationTasksAsync(
@@ -287,6 +400,77 @@ public class AmrApiClient(HttpClient http, IOptions<AmrApiOptions> options)
                 return OkResult(sw, steps, requestUrl, method, 200, body, dto,
                     $"{request.AssignedRobot} {FormatSiteRoute(request.SourceSiteCode, request.TargetSiteCode)}：" +
                     $"{dto.TaskNo} ({dto.Status})");
+            },
+            cancellationToken);
+    }
+
+    /// <summary>POST /v2/flows/{flow_name} — AMR Modbus 任務（goal_amr + value_amr）</summary>
+    public Task<ApiCallResult<TriggerFlowResultDto>> TriggerFlowDiagnosticAsync(
+        string accessToken,
+        string flowName,
+        TriggerFlowRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var steps = new List<ApiDiagnosticStep>();
+        var sw = Stopwatch.StartNew();
+        var path = $"v2/flows/{flowName.Trim()}";
+        var requestUrl = BuildRequestUrl(path);
+        const string method = "POST";
+
+        if (string.IsNullOrWhiteSpace(accessToken))
+        {
+            steps.Add(new("1. 檢查 Token", false, "access_token 為空"));
+            return Task.FromResult(FailResult<TriggerFlowResultDto>(sw, steps, ApiFailureStage.Authorization,
+                requestUrl, method, 0, null, "尚未登入"));
+        }
+
+        var node = request.Args.Params.GetValueOrDefault(BufferFlowDispatchBuilder.NodeId);
+        var goal = node?.GetValueOrDefault("goal_amr") ?? "";
+        var robot = node?.GetValueOrDefault("assigned_robot") ?? "";
+        steps.Add(new("1. 檢查 Token", true, $"Bearer token 長度={accessToken.Length}"));
+        steps.Add(new("2. 建立請求", true,
+            $"POST {requestUrl}，flow={flowName}，{goal} → {robot}"));
+
+        var json = BufferFlowDispatchBuilder.Serialize(request);
+        steps.Add(new("3. Request Body", true, json));
+
+        return SendAndParseAsync<TriggerFlowResultDto>(
+            async () =>
+            {
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                using var req = new HttpRequestMessage(HttpMethod.Post, path) { Content = content };
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                return await http.SendAsync(req, cancellationToken);
+            },
+            steps, sw, requestUrl, method,
+            body =>
+            {
+                TriggerFlowResultDto? dto;
+                try
+                {
+                    dto = JsonSerializer.Deserialize<TriggerFlowResultDto>(body, JsonOpts);
+                }
+                catch (JsonException ex)
+                {
+                    steps.Add(new("5. 解析 JSON", false, ex.Message));
+                    return FailResult<TriggerFlowResultDto>(sw, steps, ApiFailureStage.ParseResponse,
+                        requestUrl, method, 200, body, "回應不是有效的 JSON");
+                }
+
+                if (dto is null)
+                {
+                    steps.Add(new("5. 解析 JSON", false, "Deserialize 回傳 null"));
+                    return FailResult<TriggerFlowResultDto>(sw, steps, ApiFailureStage.ParseResponse,
+                        requestUrl, method, 200, body, "JSON 解析結果為空");
+                }
+
+                var taskId = string.IsNullOrWhiteSpace(dto.TaskId) ? dto.FlowId : dto.TaskId;
+                steps.Add(new("5. 解析 JSON", true,
+                    $"status={dto.Status}，task_id={taskId}，robot={dto.AssignedRobot ?? robot}"));
+                steps.Add(new("6. 驗證回應", true, "Flow 已觸發"));
+                sw.Stop();
+                return OkResult(sw, steps, requestUrl, method, 200, body, dto,
+                    $"派車成功（{dto.Status}，task={taskId}）");
             },
             cancellationToken);
     }

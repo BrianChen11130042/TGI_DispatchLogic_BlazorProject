@@ -1,0 +1,83 @@
+@using TG_DispatchLogic_Test2.Models
+@using TG_DispatchLogic_Test2.Services
+
+<div class="parking-cat-card parking-cat-buffer dispatch-buffer-ref-card dispatch-cake-ref-card @(_expanded ? "is-expanded" : "") @(Vehicle.IsEligible ? "dispatch-cake-ref-card--ready" : "")">
+    <button type="button" class="dispatch-ref-toggle" @onclick="Toggle">
+        <div class="dispatch-ref-toggle-main">
+            <div class="dispatch-ref-title-row">
+                <strong>@Vehicle.AmrCode</strong>
+                <span class="equip-badge equip-badge-muted">@Vehicle.Status</span>
+                @if (Vehicle.IsAtWaitingArea)
+                {
+                    <span class="equip-badge equip-badge-call">等待區</span>
+                }
+                @if (Vehicle.IsEligible)
+                {
+                    <span class="dispatch-status-badge ok">可派車</span>
+                }
+                else
+                {
+                    <span class="dispatch-status-badge warn">不可派</span>
+                }
+            </div>
+            <div class="parking-cat-muted small dispatch-ref-toggle-summary">
+                載料 <strong>@Vehicle.CarryingCount/@Vehicle.CarryingCapacity</strong> Port ·
+                位置 <strong>@(Vehicle.SiteCode ?? "—")</strong> ·
+                @Vehicle.Reason
+            </div>
+        </div>
+        <span class="dispatch-ref-chevron">@(_expanded ? "▲ 收合" : "▼ 展開 Port 明細")</span>
+    </button>
+
+    @if (_expanded)
+    {
+        <div class="parking-cat-card-body dispatch-ref-body">
+            <div class="parking-cat-muted small mono dispatch-ref-meta">
+                GET /v2/robots/status · 連線 @Vehicle.ConnectionStatus ·
+                DispatchEnabled @(Vehicle.DispatchEnabled ? "是" : "否")
+            </div>
+
+            <table class="parking-cat-table dispatch-ref-table">
+                <thead>
+                    <tr>
+                        <th>Port</th>
+                        <th>料況</th>
+                        <th>值</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var port in Vehicle.Ports)
+                    {
+                        <tr>
+                            <td class="fw-bold equip-hint-blue">@port.PortNumber</td>
+                            <td>
+                                <span class="dispatch-material-tag @PortTagClass(port.RawValue)">
+                                    @port.Label
+                                </span>
+                            </td>
+                            <td class="mono">@port.RawValue</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            <div class="parking-cat-muted small dispatch-ref-legend">
+                0=空 · 1=無絲 · 2=有絲 · 9=異常（可派車條件：12 Port 皆為 0）
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public CakeVehicleDispatchStatus Vehicle { get; set; } = default!;
+
+    bool _expanded;
+
+    void Toggle() => _expanded = !_expanded;
+
+    static string PortTagClass(ushort value) => value switch
+    {
+        0 => "empty",
+        2 => "has",
+        _ => "warn"
+    };
+}

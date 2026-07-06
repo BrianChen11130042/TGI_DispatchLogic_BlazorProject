@@ -1,0 +1,30 @@
+@using TG_DispatchLogic_Test2.Models
+
+<div class="parking-cat-card parking-cat-buffer">
+    <div class="parking-cat-card-head">
+        <div class="fw-bold">@Station.StationCode · @Station.ParkingPointId</div>
+        <div class="parking-cat-muted small mono">
+            Base Addr @Station.BaseAddress · 作業面 Addr @Station.OperationSideAddress
+        </div>
+    </div>
+    <div class="parking-cat-buffer-sides">
+        <div class="parking-cat-buffer-col">
+            <ParkingCatBufferSideTable Side="Station.SideA"
+                                       BadgeClass="equip-badge-ok"
+                                       Expanded="@ExpandedSides.Contains($"{Station.StationId}-A")"
+                                       OnToggle="OnToggle" />
+        </div>
+        <div class="parking-cat-buffer-col">
+            <ParkingCatBufferSideTable Side="Station.SideB"
+                                       BadgeClass="equip-badge-call"
+                                       Expanded="@ExpandedSides.Contains($"{Station.StationId}-B")"
+                                       OnToggle="OnToggle" />
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public BufferStationDto Station { get; set; } = default!;
+    [Parameter] public HashSet<string> ExpandedSides { get; set; } = new();
+    [Parameter] public EventCallback<string> OnToggle { get; set; }
+}

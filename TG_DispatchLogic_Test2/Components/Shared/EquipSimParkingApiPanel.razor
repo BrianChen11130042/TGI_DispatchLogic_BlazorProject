@@ -1,0 +1,379 @@
+@using TG_DispatchLogic_Test2.Models
+@using TG_DispatchLogic_Test2.Services
+@inject SimulateCodeApiClient ApiClient
+@inject IOptions<EquipSimOptions> EquipSimOptions
+@using Microsoft.Extensions.Options
+@implements IAsyncDisposable
+
+<div class="equip-api-panel">
+    <div class="equip-sim-toolbar">
+        <div class="equip-sim-conn">
+            <label>API BaseUrl</label>
+            <DxTextBox @bind-Text="_apiBaseUrl" @bind-Text:after="OnApiBaseUrlChangedAsync" CssClass="equip-sim-input equip-api-url" />
+        </div>
+        <div class="equip-sim-status">
+            <span class="equip-live-dot @(_fetchError is null && !_busy ? "is-ok" : _busy ? "" : "is-err")"></span>
+            @if (_busy && _lastFetchedAt is null)
+            {
+                <span>載入中…</span>
+            }
+            else if (_lastFetchedAt is not null)
+            {
+                <span>@(_fetchError is null ? "已載入" : "載入失敗") · @_lastElapsedMs ms · @_lastFetchedAt.Value.ToString("HH:mm:ss")</span>
+            }
+            else if (_fetchError is not null)
+            {
+                <span class="text-danger">@_fetchError</span>
+            }
+            <DxCheckBox @bind-Checked="_autoRefresh">自動更新</DxCheckBox>
+        </div>
+    </div>
+
+    <p class="api-test-hint mb-2">
+        停車點 / Port 對照表 · 機台 Port / AMR 手臂 Port · Modbus Address（自動從 SimulateCode API 載入）
+    </p>
+
+    <div class="equip-tab-bar">
+        @foreach (var cat in _categories)
+        {
+            <button type="button"
+                    class="equip-tab-btn @(_category == cat.Key ? "active" : "")"
+                    @onclick="() => SwitchCategoryAsync(cat.Key)">
+                @cat.Label
+            </button>
+        }
+    </div>
+
+    <div class="equip-subtab-bar">
+        <button type="button"
+                class="equip-tab-btn small @(_viewTab == "catalog" ? "active" : "")"
+                @onclick='() => _viewTab = "catalog"'>
+            對照表
+        </button>
+        <button type="button"
+                class="equip-tab-btn small @(_viewTab == "api" ? "active" : "")"
+                @onclick='() => _viewTab = "api"'>
+            API / JSON
+        </button>
+    </div>
+
+    @if (_viewTab == "catalog")
+    {
+        @if (_busy && CurrentCatalogMissing())
+        {
+            <p class="api-test-hint">正在從 SimulateCode 載入對照表…</p>
+        }
+        else if (_fetchError is not null && CurrentCatalogMissing())
+        {
+            <p class="text-danger">@_fetchError</p>
+        }
+        else if (_category == "twisting" && _twistCatalog is not null)
+        {
+            var machine = _twistCatalog.Machines.FirstOrDefault(m => m.MachineId == _selectedMachineId)
+                          ?? _twistCatalog.Machines.First();
+
+            <ParkingCatModbusInfo ShowGlobalRules="true" />
+            <div class="parking-cat-picker">
+                @foreach (var m in _twistCatalog.Machines.OrderBy(x => x.MachineId))
+                {
+                    <button type="button"
+                            class="parking-cat-pick-btn @(_selectedMachineId == m.MachineId ? "active" : "")"
+                            @onclick="() => _selectedMachineId = m.MachineId">
+                        @m.MachineCode
+                    </button>
+                }
+            </div>
+
+            <div class="parking-cat-machine-head">
+                <strong class="parking-cat-machine-code">@machine.MachineCode</strong>
+                <span class="parking-cat-muted">
+                    A 側 TWP@(machine.SideA.TwpGroupId.ToString("D2")) · B 側 TWP@(machine.SideB.TwpGroupId.ToString("D2"))
+                </span>
+                <span class="equip-badge equip-badge-muted mono">狀態 @machine.StatusAddress</span>
+                <span class="equip-badge equip-badge-muted mono">Cake摘要 @machine.CakeSummaryAddress</span>
+                <span class="equip-badge equip-badge-muted mono">Bobbin摘要 @machine.BobbinSummaryAddress</span>
+            </div>
+
+            <ParkingCatModbusInfo Machine="machine" />
+
+            <div class="parking-cat-two-col">
+                <ParkingCatTwistingSidePanel Side="machine.SideA"
+                                             ExpandedPoints="_expandedPoints"
+                                             OnToggle="TogglePoint" />
+                <ParkingCatTwistingSidePanel Side="machine.SideB"
+                                             ExpandedPoints="_expandedPoints"
+                                             OnToggle="TogglePoint" />
+            </div>
+        }
+        else if (_category == "buffer" && _bufferCatalog is not null)
+        {
+            var station = _bufferCatalog.Stations.FirstOrDefault(s => s.StationId == _selectedBufferId)
+                          ?? _bufferCatalog.Stations.First();
+
+            <div class="parking-cat-picker">
+                @foreach (var s in _bufferCatalog.Stations.OrderBy(x => x.StationId))
+                {
+                    <button type="button"
+                            class="parking-cat-pick-btn buf @(_selectedBufferId == s.StationId ? "active" : "")"
+                            @onclick="() => SelectBuffer(s.StationId)">
+                        @s.ParkingPointId
+                    </button>
+                }
+            </div>
+            <ParkingCatBufferPanel Station="station"
+                                     ExpandedSides="_expandedBufferSides"
+                                     OnToggle="ToggleBufferSide" />
+        }
+        else if (_category == "clearing" && _clearingCatalog is not null)
+        {
+            var station = _clearingCatalog.Stations.FirstOrDefault(s => s.StationId == _selectedClearingId)
+                          ?? _clearingCatalog.Stations.First();
+
+            <div class="parking-cat-picker">
+                @foreach (var s in _clearingCatalog.Stations.OrderBy(x => x.StationId))
+                {
+                    <button type="button"
+                            class="parking-cat-pick-btn clr @(_selectedClearingId == s.StationId ? "active" : "")"
+                            @onclick="() => _selectedClearingId = s.StationId">
+                        @s.ParkingPointId
+                    </button>
+                }
+            </div>
+            <ParkingCatSinglePortPanel Title="@($"清軸 {station.StationId}")"
+                                       ParkingPointId="@station.ParkingPointId"
+                                       PortNumber="@station.Port.PortNumber"
+                                       ArmPortNumber="@station.Port.ArmPortNumber"
+                                       Address="@station.Port.Address"
+                                       CssClass="parking-cat-clearing" />
+        }
+        else if (_category == "packaging" && _packagingCatalog is not null)
+        {
+            var station = _packagingCatalog.Stations.FirstOrDefault(s => s.StationId == _selectedPackagingId)
+                          ?? _packagingCatalog.Stations.First();
+
+            <div class="parking-cat-picker">
+                @foreach (var s in _packagingCatalog.Stations.OrderBy(x => x.StationId))
+                {
+                    <button type="button"
+                            class="parking-cat-pick-btn pkg @(_selectedPackagingId == s.StationId ? "active" : "")"
+                            @onclick="() => _selectedPackagingId = s.StationId">
+                        @s.ParkingPointId
+                    </button>
+                }
+            </div>
+            <ParkingCatSinglePortPanel Title="@($"AOI 包裝 {station.StationId}")"
+                                       ParkingPointId="@station.ParkingPointId"
+                                       PortNumber="@station.Port.PortNumber"
+                                       ArmPortNumber="@station.Port.ArmPortNumber"
+                                       Address="@station.Port.Address"
+                                       CssClass="parking-cat-packaging" />
+        }
+    }
+    else
+    {
+        <p class="equip-panel-hint mono">GET @CatalogPath()</p>
+        <ApiDiagnosticPanel Result="_result" />
+    }
+</div>
+
+@code {
+    string _apiBaseUrl = "";
+    string _category = "twisting";
+    string _viewTab = "catalog";
+    bool _busy;
+    bool _autoRefresh = true;
+    string? _fetchError;
+    long _lastElapsedMs;
+    DateTime? _lastFetchedAt;
+
+    int _selectedMachineId = 1;
+    int _selectedBufferId = 1;
+    int _selectedClearingId = 1;
+    int _selectedPackagingId = 1;
+
+    ApiCallResult? _result;
+    ParkingCatalogDto? _twistCatalog;
+    BufferCatalogDto? _bufferCatalog;
+    ClearingCatalogDto? _clearingCatalog;
+    PackagingCatalogDto? _packagingCatalog;
+
+    readonly HashSet<string> _expandedPoints = new(StringComparer.Ordinal);
+    readonly HashSet<string> _expandedBufferSides = new(StringComparer.Ordinal);
+
+    CancellationTokenSource? _cts;
+
+    readonly (string Key, string Label)[] _categories =
+    [
+        ("twisting", "撚紗機"),
+        ("buffer", "Buffer 區"),
+        ("clearing", "清軸"),
+        ("packaging", "AOI 包裝")
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _apiBaseUrl = EquipSimOptions.Value.SimulateCodeApiBaseUrl;
+        _cts = new CancellationTokenSource();
+        await FetchCatalogAsync();
+        _ = RefreshLoopAsync(_cts.Token);
+    }
+
+    async Task RefreshLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+        while (await timer.WaitForNextTickAsync(ct))
+        {
+            if (_autoRefresh && !_busy && !string.IsNullOrWhiteSpace(_apiBaseUrl))
+                await FetchCatalogAsync(silent: true);
+        }
+    }
+
+    async Task SwitchCategoryAsync(string key)
+    {
+        if (_category == key) return;
+        _category = key;
+        await FetchCatalogAsync();
+    }
+
+    string CatalogPath() => _category switch
+    {
+        "twisting" => "api/parking/twm",
+        "buffer" => "api/parking/buf",
+        "clearing" => "api/parking/clr",
+        "packaging" => "api/parking/pkg",
+        _ => "api/parking/twm"
+    };
+
+    bool CurrentCatalogMissing() => _category switch
+    {
+        "twisting" => _twistCatalog is null,
+        "buffer" => _bufferCatalog is null,
+        "clearing" => _clearingCatalog is null,
+        "packaging" => _packagingCatalog is null,
+        _ => true
+    };
+
+    async Task FetchCatalogAsync(bool silent = false)
+    {
+        if (string.IsNullOrWhiteSpace(_apiBaseUrl)) return;
+        if (_busy) return;
+
+        _busy = true;
+        if (!silent)
+        {
+            _fetchError = null;
+            StateHasChanged();
+        }
+
+        try
+        {
+            var path = CatalogPath();
+            var label = $"{_categories.First(c => c.Key == _category).Label} 停車對照";
+
+            switch (_category)
+            {
+                case "twisting":
+                {
+                    var r = await ApiClient.GetAsync<ParkingCatalogDto>(_apiBaseUrl, path, label);
+                    _result = r;
+                    if (r.Success && r.Data is not null)
+                    {
+                        _twistCatalog = r.Data;
+                        _fetchError = null;
+                        if (!_twistCatalog.Machines.Any(m => m.MachineId == _selectedMachineId))
+                            _selectedMachineId = _twistCatalog.Machines.First().MachineId;
+                    }
+                    else _fetchError = r.Summary;
+                    break;
+                }
+                case "buffer":
+                {
+                    var r = await ApiClient.GetAsync<BufferCatalogDto>(_apiBaseUrl, path, label);
+                    _result = r;
+                    if (r.Success && r.Data is not null)
+                    {
+                        _bufferCatalog = r.Data;
+                        _fetchError = null;
+                        if (!_bufferCatalog.Stations.Any(s => s.StationId == _selectedBufferId))
+                            _selectedBufferId = _bufferCatalog.Stations.First().StationId;
+                        SelectBuffer(_selectedBufferId);
+                    }
+                    else _fetchError = r.Summary;
+                    break;
+                }
+                case "clearing":
+                {
+                    var r = await ApiClient.GetAsync<ClearingCatalogDto>(_apiBaseUrl, path, label);
+                    _result = r;
+                    if (r.Success && r.Data is not null)
+                    {
+                        _clearingCatalog = r.Data;
+                        _fetchError = null;
+                        if (!_clearingCatalog.Stations.Any(s => s.StationId == _selectedClearingId))
+                            _selectedClearingId = _clearingCatalog.Stations.First().StationId;
+                    }
+                    else _fetchError = r.Summary;
+                    break;
+                }
+                case "packaging":
+                {
+                    var r = await ApiClient.GetAsync<PackagingCatalogDto>(_apiBaseUrl, path, label);
+                    _result = r;
+                    if (r.Success && r.Data is not null)
+                    {
+                        _packagingCatalog = r.Data;
+                        _fetchError = null;
+                        if (!_packagingCatalog.Stations.Any(s => s.StationId == _selectedPackagingId))
+                            _selectedPackagingId = _packagingCatalog.Stations.First().StationId;
+                    }
+                    else _fetchError = r.Summary;
+                    break;
+                }
+            }
+
+            _lastFetchedAt = DateTime.Now;
+            _lastElapsedMs = _result?.ElapsedMs ?? 0;
+        }
+        finally
+        {
+            _busy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    async Task OnApiBaseUrlChangedAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_apiBaseUrl))
+            await FetchCatalogAsync();
+    }
+
+    void SelectBuffer(int stationId)
+    {
+        _selectedBufferId = stationId;
+        _expandedBufferSides.Add($"{stationId}-A");
+        _expandedBufferSides.Add($"{stationId}-B");
+    }
+
+    async Task TogglePoint(string key)
+    {
+        if (!_expandedPoints.Add(key))
+            _expandedPoints.Remove(key);
+        await Task.CompletedTask;
+    }
+
+    async Task ToggleBufferSide(string key)
+    {
+        if (!_expandedBufferSides.Add(key))
+            _expandedBufferSides.Remove(key);
+        await Task.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_cts is not null)
+        {
+            await _cts.CancelAsync();
+            _cts.Dispose();
+        }
+    }
+}

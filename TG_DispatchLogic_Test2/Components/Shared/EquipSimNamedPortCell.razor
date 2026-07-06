@@ -1,0 +1,13 @@
+<div class="equip-named-port @CssClass" title="@Tooltip">
+    <span class="equip-port-status">@StatusText</span>
+    <span class="equip-port-machine-no">@MachinePort</span>
+    <span class="equip-port-arm-no">@ArmPort</span>
+</div>
+
+@code {
+    [Parameter] public string StatusText { get; set; } = "";
+    [Parameter] public int MachinePort { get; set; }
+    [Parameter] public int ArmPort { get; set; }
+    [Parameter] public string CssClass { get; set; } = "";
+    [Parameter] public string? Tooltip { get; set; }
+}

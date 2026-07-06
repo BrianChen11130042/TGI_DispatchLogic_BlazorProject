@@ -1,4 +1,4 @@
-﻿@page "/"
+@page "/"
 @rendermode InteractiveServer
 
 <PageTitle>派車邏輯</PageTitle>
@@ -9,9 +9,13 @@
         <p>台玻 AMR 派車邏輯開發平台</p>
     </div>
     <div class="home-links">
-        <NavLink href="/api-test" class="home-link-card">
-            <span class="home-link-title">API 測試</span>
-            <span class="home-link-desc">登入、查詢車隊與站點狀態</span>
+        <NavLink href="/dispatch-logic" class="home-link-card">
+            <span class="home-link-title">派車邏輯</span>
+            <span class="home-link-desc">Buffer / 撚紗區可派車條件即時判斷</span>
+        </NavLink>
+        <NavLink href="/api-test" class="home-link-card" style="margin-top: 1rem;">
+            <span class="home-link-title">AMR 模擬軟體測試</span>
+            <span class="home-link-desc">登入、查詢車隊、站點與 AMR 載運 Port</span>
         </NavLink>
         <NavLink href="/fleet-monitor" class="home-link-card" style="margin-top: 1rem;">
             <span class="home-link-title">車隊監控</span>

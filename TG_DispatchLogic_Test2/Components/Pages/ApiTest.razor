@@ -1,12 +1,14 @@
 @page "/api-test"
+@page "/amr-sim-test"
 @rendermode InteractiveServer
 @inject AmrApiClient AmrApi
+@using TG_DispatchLogic_Test2.Models
 @using TG_DispatchLogic_Test2.Services
 
-<PageTitle>API 測試</PageTitle>
+<PageTitle>AMR 模擬軟體測試</PageTitle>
 
 <div class="page-content api-test-page">
-    <PageHeader Title="API 測試"
+    <PageHeader Title="AMR 模擬軟體測試"
                 Subtitle="@($"目標：{AmrApi.BaseUrl}")" />
 
     @if (!string.IsNullOrEmpty(_token))
@@ -342,16 +344,71 @@
             </div>
         </ChildContent>
     </ApiTestCollapseSection>
+
+    <ApiTestCollapseSection Title="7. AMR 載運 Port 狀態">
+        <Description>
+            <code>GET /api/simulation/amrs</code> — Cake / Bobbin 車載運件數與容量
+        </Description>
+        <ChildContent>
+            <p class="api-test-hint">
+                TGI-AMR-System 目前回傳 <code>carrying_count</code> / <code>carrying_capacity</code>（總件數），
+                尚無逐 Port 料件種類 API。下方依件數推斷 Port 1~N 為「有料」、其餘為「空」。
+            </p>
+            <DxButton Text="查詢 AMR 載運"
+                      RenderStyle="ButtonRenderStyle.Secondary"
+                      Click="OnAmrCargoAsync"
+                      Enabled="@(!_amrCargoBusy)" />
+            @if (_amrCargoBusy) { <span class="api-test-hint">查詢中…</span> }
+            <ApiDiagnosticPanel Result="_amrCargoResult">
+                <ExtraContent>
+                    @if (_amrCargoResult?.Success == true && _amrCargoResult.Data?.Count > 0)
+                    {
+                        @foreach (var group in _amrCargoResult.Data
+                            .OrderBy(a => a.AmrType, StringComparer.OrdinalIgnoreCase)
+                            .ThenBy(a => a.AmrCode, StringComparer.OrdinalIgnoreCase)
+                            .GroupBy(a => a.AmrType, StringComparer.OrdinalIgnoreCase))
+                        {
+                            <h4 class="amr-cargo-group-title">@group.Key 車（@group.Count() 台）</h4>
+                            <div class="amr-cargo-grid">
+                                @foreach (var amr in group)
+                                {
+                                    var cap = Math.Max(1, amr.CarryingCapacity);
+                                    <div class="amr-cargo-card">
+                                        <div class="amr-cargo-head">
+                                            <strong>@amr.AmrCode</strong>
+                                            <span class="amr-cargo-meta">@amr.Status · @(amr.SiteCode ?? "—")</span>
+                                        </div>
+                                        <div class="amr-cargo-count">
+                                            載運 <strong>@amr.CarryingCount</strong> / @cap
+                                            · 電量 @amr.BatteryPercent.ToString("0")%
+                                        </div>
+                                        <div class="amr-cargo-ports" title="Port 1 起算，前 @amr.CarryingCount 格有料">
+                                            @for (var p = 1; p <= cap; p++)
+                                            {
+                                                var filled = p <= amr.CarryingCount;
+                                                <span class="amr-cargo-port @(filled ? "filled" : "")">@p</span>
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    }
+                </ExtraContent>
+            </ApiDiagnosticPanel>
+        </ChildContent>
+    </ApiTestCollapseSection>
 </div>
 
 @code {
     string? _token;
-    bool _loginBusy, _fleetBusy, _robotsBusy, _bufferBusy, _waitPointBusy;
+    bool _loginBusy, _fleetBusy, _robotsBusy, _bufferBusy, _waitPointBusy, _amrCargoBusy;
     ApiCallResult<LoginData>? _loginResult;
     ApiCallResult<List<FleetStatusDto>>? _fleetResult;
     ApiCallResult<List<RobotStatusDto>>? _robotsResult;
     ApiCallResult<List<WmsCellDto>>? _bufferResult;
     ApiCallResult<List<WmsCellDto>>? _waitPointResult;
+    ApiCallResult<List<SimulationAmrDto>>? _amrCargoResult;
 
     bool _dispatchOptionsBusy, _dispatchBusy, _dispatchOptionsLoaded;
     string? _dispatchProgress;
@@ -628,6 +685,16 @@
         finally { _waitPointBusy = false; }
     }
 
+    async Task OnAmrCargoAsync()
+    {
+        if (!await EnsureTokenAsync()) return;
+        _amrCargoBusy = true;
+        _amrCargoResult = null;
+        StateHasChanged();
+        try { _amrCargoResult = await AmrApi.GetSimulationAmrsAsync(_token!); }
+        finally { _amrCargoBusy = false; }
+    }
+
     async Task<bool> EnsureTokenAsync()
     {
         if (!string.IsNullOrEmpty(_token)) return true;
@@ -642,6 +709,7 @@
         _robotsResult = null;
         _bufferResult = null;
         _waitPointResult = null;
+        _amrCargoResult = null;
         _dispatchResult = null;
         _dispatchOptionsLoaded = false;
         _dispatchFleet = [];

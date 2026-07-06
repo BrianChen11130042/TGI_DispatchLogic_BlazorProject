@@ -16,12 +16,20 @@ builder.Services.AddMvc();
 
 builder.Services.Configure<AmrApiOptions>(
     builder.Configuration.GetSection(AmrApiOptions.SectionName));
+builder.Services.Configure<EquipSimOptions>(
+    builder.Configuration.GetSection(EquipSimOptions.SectionName));
 builder.Services.AddHttpClient<AmrApiClient>((sp, client) =>
 {
     var opts = sp.GetRequiredService<IOptions<AmrApiOptions>>().Value;
     client.BaseAddress = new Uri(opts.BaseUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(15);
 });
+builder.Services.AddHttpClient<SimulateCodeApiClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(15);
+});
+builder.Services.AddSingleton<SimulateCodeCatalogService>();
+builder.Services.AddSingleton<ModbusEquipPollService>();
 
 var app = builder.Build();
 

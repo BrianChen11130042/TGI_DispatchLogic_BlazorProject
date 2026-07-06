@@ -1,0 +1,34 @@
+<div class="parking-cat-card @CssClass">
+    <div class="parking-cat-card-head">
+        <div class="fw-bold">@Title · @ParkingPointId</div>
+        <div class="parking-cat-muted small">1 Port · 機台/手臂 Port 皆為 1</div>
+    </div>
+    <div class="parking-cat-card-body">
+        <table class="parking-cat-table">
+            <thead>
+                <tr>
+                    <th>機台 Port</th>
+                    <th>手臂 Port</th>
+                    <th>Addr</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td class="fw-bold">@PortNumber</td>
+                    <td class="fw-bold equip-hint-blue">@ArmPortNumber</td>
+                    <td class="mono">@Address</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="parking-cat-muted small mt-2">Modbus 值：0=無料 1=有料</div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public string ParkingPointId { get; set; } = "";
+    [Parameter] public int PortNumber { get; set; }
+    [Parameter] public int ArmPortNumber { get; set; }
+    [Parameter] public int Address { get; set; }
+    [Parameter] public string CssClass { get; set; } = "";
+}

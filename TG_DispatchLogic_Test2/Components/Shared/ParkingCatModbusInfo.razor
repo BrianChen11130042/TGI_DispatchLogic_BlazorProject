@@ -1,0 +1,62 @@
+@if (ShowGlobalRules)
+{
+    <div class="parking-cat-card parking-cat-rules">
+        <div class="parking-cat-card-head">Modbus 暫存器對照（Holding Register · TCP Port 5020 · UnitId 1）</div>
+        <div class="parking-cat-rules-body">
+            <div class="parking-cat-rules-grid">
+                <div>
+                    <div class="parking-cat-muted">機台狀態</div>
+                    <div class="mono">8000 ~ 8034（M01~M35）</div>
+                    <div class="parking-cat-muted">1=叫車 2=請啟動 3=撚紗中 4=請下料 5=空閒 9=異常</div>
+                </div>
+                <div>
+                    <div class="parking-cat-muted">Cake 有絲摘要</div>
+                    <div class="mono">9000 ~ 9034</div>
+                    <div class="parking-cat-muted">每台 Cake HasThread(2) 總數</div>
+                </div>
+                <div>
+                    <div class="parking-cat-muted">Bobbin 有絲摘要</div>
+                    <div class="mono">9100 ~ 9134</div>
+                    <div class="parking-cat-muted">每台 Bobbin HasThread(2) 總數</div>
+                </div>
+                <div class="parking-cat-rules-wide">
+                    <div class="parking-cat-muted">Port 料況（Cake 2000 起 / Bobbin 10000 起，每台 +200）</div>
+                    <div class="mono">A 側 +0~83 · B 側 +100~183 · 值：0=空 1=無絲 2=有絲 9=異常</div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (Machine is not null)
+{
+    <div class="parking-cat-card parking-cat-modbus-compact">
+        <div class="parking-cat-card-head small">@Machine.MachineCode Modbus 地址</div>
+        <div class="parking-cat-modbus-grid">
+            <div class="parking-cat-modbus-cell">
+                <div class="parking-cat-muted">機台狀態</div>
+                <div class="mono fw-bold">@Machine.StatusAddress</div>
+            </div>
+            <div class="parking-cat-modbus-cell">
+                <div class="parking-cat-muted">Cake 摘要</div>
+                <div class="mono fw-bold">@Machine.CakeSummaryAddress</div>
+            </div>
+            <div class="parking-cat-modbus-cell">
+                <div class="parking-cat-muted">Bobbin 摘要</div>
+                <div class="mono fw-bold">@Machine.BobbinSummaryAddress</div>
+            </div>
+            <div class="parking-cat-modbus-cell">
+                <div class="parking-cat-muted">Port 料況</div>
+                <div class="mono fw-bold small">
+                    C @Machine.SideA.CakeBaseAddress~@Machine.SideA.CakeAddressEnd<br />
+                    B @Machine.SideB.CakeBaseAddress~@Machine.SideB.CakeAddressEnd
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public ParkingMachineDto? Machine { get; set; }
+    [Parameter] public bool ShowGlobalRules { get; set; }
+}

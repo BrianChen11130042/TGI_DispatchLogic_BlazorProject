@@ -36,4 +36,14 @@ public class RobotStatusDto
 
     [JsonPropertyName("target_site_id")]
     public int? TargetSiteId { get; set; }
+
+    [JsonPropertyName("carrying_count")]
+    public int CarryingCount { get; set; }
+
+    [JsonPropertyName("carrying_capacity")]
+    public int CarryingCapacity { get; set; }
+
+    /// <summary>Port 1~N 料況：0=空，1=無絲，2=有絲，9=異常。</summary>
+    [JsonPropertyName("port_states")]
+    public List<ushort> PortStates { get; set; } = [];
 }
