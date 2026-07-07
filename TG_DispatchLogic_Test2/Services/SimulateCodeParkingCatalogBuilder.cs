@@ -2,7 +2,11 @@ using TG_DispatchLogic_Test2.Models;
 
 namespace TG_DispatchLogic_Test2.Services;
 
-/// <summary>依 SimulateCode TwistingParkingRegistry 規則建立停車對照表。</summary>
+/// <summary>
+/// 依 SimulateCode TwistingParkingRegistry 規則建立停車對照表。
+/// M01A～M13A 維持原設計；M13B 獨立 TWP14；M14A 獨立 TWP15；
+/// M14B～M35B 走道編號 +1 偏移（M35B 獨立 TWP37）。
+/// </summary>
 public static class SimulateCodeParkingCatalogBuilder
 {
     const int MachineCount = 35;
@@ -17,10 +21,10 @@ public static class SimulateCodeParkingCatalogBuilder
 
     public static ParkingCatalogDto Build() =>
         new(
-            Version: "embedded-1.0",
+            Version: "embedded-1.2",
             GeneratedAt: DateTime.Now,
             MachineCount: MachineCount,
-            Description: "內建對照表（與 SimulateCode 停車點 / Modbus / 手臂 Port 規則一致）",
+            Description: "內建對照表（與 SimulateCode 停車點 / Modbus / 手臂 Port 規則一致；TWP01~TWP37）",
             Machines: Enumerable.Range(1, MachineCount).Select(BuildMachine).ToList());
 
     static ParkingMachineDto BuildMachine(int machineId) =>
@@ -73,8 +77,21 @@ public static class SimulateCodeParkingCatalogBuilder
             points.FirstOrDefault()?.SharedWith, points);
     }
 
-    static int GetTwpGroupId(int machineId, char side) =>
-        side == 'A' ? (machineId == 1 ? 1 : machineId) : machineId + 1;
+    public static int GetTwpGroupId(int machineId, char side)
+    {
+        if (side == 'A')
+        {
+            if (machineId == 1) return 1;
+            if (machineId <= 13) return machineId;
+            if (machineId == 14) return 15;
+            return machineId + 1;
+        }
+
+        if (machineId <= 12) return machineId + 1;
+        if (machineId == 13) return 14;
+        if (machineId <= 34) return machineId + 2;
+        return 37;
+    }
 
     static int GetPortNumber(char side, int sequence, int portInPoint) =>
         (side == 'A' ? SideAPortStart : SideBPortStart)
@@ -86,10 +103,16 @@ public static class SimulateCodeParkingCatalogBuilder
     static SharedDockingPartnerDto? GetSharedPartner(int machineId, char side, int sequence, int twpGroup)
     {
         var parkingId = $"TWP{twpGroup:D2}-{sequence:D2}";
-        if (side == 'B' && machineId < MachineCount)
+
+        if (side == 'B')
+        {
+            if (machineId == 13 || machineId >= MachineCount)
+                return null;
             return new SharedDockingPartnerDto(machineId + 1, 'A', parkingId);
-        if (side == 'A' && machineId > 1)
-            return new SharedDockingPartnerDto(machineId - 1, 'B', parkingId);
-        return null;
+        }
+
+        if (machineId == 1 || machineId == 14)
+            return null;
+        return new SharedDockingPartnerDto(machineId - 1, 'B', parkingId);
     }
 }

@@ -1,0 +1,22 @@
+<div class="dispatch-status-toolbar">
+    <button type="button"
+            class="dispatch-log-clear-btn dispatch-reset-all-btn"
+            disabled="@(!CanReset)"
+            @onclick="OnReset">
+        一鍵重置任務與紀錄
+    </button>
+    @if (CanReset)
+    {
+        <span class="parking-cat-muted small">
+            任務中 @InFlightCount 筆 · 紀錄 @LogCount 筆
+        </span>
+    }
+</div>
+
+@code {
+    [Parameter] public int InFlightCount { get; set; }
+    [Parameter] public int LogCount { get; set; }
+    [Parameter] public EventCallback OnReset { get; set; }
+
+    bool CanReset => InFlightCount > 0 || LogCount > 0;
+}

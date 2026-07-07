@@ -32,7 +32,7 @@
                 <div class="dispatch-twp-point-block @(point.IsDispatchable ? "ready" : "")">
                     <div class="dispatch-twp-point-head">
                         <span class="equip-badge equip-badge-call">@point.ParkingPointId</span>
-                        <span class="parking-cat-muted small">D@point.DNumber · Seq @point.Sequence</span>
+                        <span class="parking-cat-muted small">D@(point.DNumber) · Seq @point.Sequence</span>
                         <span class="dispatch-status-badge @(point.IsDispatchable ? "ok" : "wait") small-badge">
                             @(point.IsDispatchable ? "待上料" : "—")
                         </span>

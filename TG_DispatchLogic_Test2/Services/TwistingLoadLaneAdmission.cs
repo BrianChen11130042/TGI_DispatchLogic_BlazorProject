@@ -5,7 +5,7 @@ namespace TG_DispatchLogic_Test2.Services;
 /// <summary>
 /// 撚紗上料優先權（由大到小）：
 /// 1. 撚紗機（M01 → M02 → …）
-/// 2. 同機左右走道（TWP01 / TWP02 互不擋，可同時派尾端組）
+/// 2. 同機左右走道（各 TWP 群組互不擋，可同時派尾端組）
 /// 3. 同走道內尾端往前（19~21 → 16~18 → …，前組須進入走道才開放後組）
 /// </summary>
 public static class TwistingLoadLaneAdmission

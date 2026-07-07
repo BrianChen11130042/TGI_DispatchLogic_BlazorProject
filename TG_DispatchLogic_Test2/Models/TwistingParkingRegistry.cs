@@ -1,8 +1,10 @@
 namespace TG_DispatchLogic_Test2.Models;
 
-/// <summary>撚紗機停車點常數（與 SimulateCode 一致）。</summary>
+/// <summary>撚紗機停車點常數（與 SimulateCode 一致，TWP01~TWP37）。</summary>
 public static class TwistingParkingRegistry
 {
+    public const int MachineCount = 35;
+    public const int MaxTwpGroupId = 37;
     public const int PortsPerDockingPoint = 4;
     public const int StopsPerLoadMission = 3;
     public const int PortsPerLoadMission = PortsPerDockingPoint * StopsPerLoadMission;

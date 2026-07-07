@@ -1831,6 +1831,11 @@ html, body {
     margin-bottom: 0.75rem;
 }
 
+.dispatch-mode-bar .dispatch-status-toolbar {
+    margin: 0;
+    margin-left: auto;
+}
+
 .dispatch-amr-status.ok { opacity: 0.85; }
 .dispatch-amr-status.err { color: #f88; max-width: 28rem; word-break: break-word; }
 
@@ -1994,6 +1999,24 @@ html, body {
 .dispatch-log-clear-btn:hover {
     opacity: 1;
     background: rgba(255, 255, 255, 0.06);
+}
+
+.dispatch-log-clear-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.dispatch-status-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.75rem 0 0.5rem;
+}
+
+.dispatch-reset-all-btn {
+    border-color: rgba(255, 193, 7, 0.45);
+    color: #ffc107;
 }
 
 .dispatch-buffer-log-list {

@@ -85,6 +85,9 @@
             {
                 <span class="api-test-hint">符合配對條件時自動派車 · 每 @BufferAutoDispatchIntervalSeconds 秒最多派 1 組</span>
             }
+            <DispatchStatusResetBar InFlightCount="ActiveInFlightCount"
+                                    LogCount="_dispatchLogs.Count"
+                                    OnReset="ResetBufferDispatchStateAsync" />
         </div>
 
         <div class="equip-panel-hint">
@@ -136,7 +139,7 @@
             }
 
             <DispatchBufferInFlightPanel Tasks="ActiveInFlightTasks" />
-            <DispatchBufferLogPanel Logs="_dispatchLogs" OnClear="ClearDispatchLogsAsync" />
+            <DispatchBufferLogPanel Logs="_dispatchLogs" />
         }
 
         <section class="dispatch-section dispatch-detail-section">
@@ -202,6 +205,9 @@
             {
                 <span class="api-test-hint">叫車狀態 + 3 停車點可上料時自動派車 · 每 @TwpAutoDispatchIntervalSeconds 秒最多派 1 組（等同按派車鍵）</span>
             }
+            <DispatchStatusResetBar InFlightCount="TwpActiveInFlightCount"
+                                    LogCount="_twpDispatchLogs.Count"
+                                    OnReset="ResetTwpDispatchStateAsync" />
         </div>
 
         <div class="equip-panel-hint">
@@ -256,7 +262,7 @@
             }
 
             <DispatchTwistingLoadInFlightPanel Tasks="TwpActiveInFlightTasks" />
-            <DispatchBufferLogPanel Logs="_twpDispatchLogs" OnClear="ClearTwpDispatchLogsAsync" />
+            <DispatchBufferLogPanel Logs="_twpDispatchLogs" />
         }
 
         <section class="dispatch-section dispatch-detail-section">
@@ -912,12 +918,6 @@
             result.ResponseBody));
     }
 
-    Task ClearTwpDispatchLogsAsync()
-    {
-        _twpDispatchLogs.Clear();
-        return InvokeAsync(StateHasChanged);
-    }
-
     async Task DispatchPairManualAsync(BufferDispatchPair pair)
     {
         if (!await EnsureTokenAsync()) return;
@@ -995,9 +995,21 @@
             result.ResponseBody));
     }
 
-    Task ClearDispatchLogsAsync()
+    Task ResetBufferDispatchStateAsync()
     {
+        _inFlightDispatches.Clear();
         _dispatchLogs.Clear();
+        _lastBufferAutoFlowAt = null;
+        RecomputePairings();
+        return InvokeAsync(StateHasChanged);
+    }
+
+    Task ResetTwpDispatchStateAsync()
+    {
+        _twpInFlightDispatches.Clear();
+        _twpDispatchLogs.Clear();
+        _lastTwpAutoFlowAt = null;
+        RecomputeTwistingPairings();
         return InvokeAsync(StateHasChanged);
     }
 

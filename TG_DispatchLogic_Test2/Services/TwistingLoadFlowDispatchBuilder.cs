@@ -8,7 +8,7 @@ public static class TwistingLoadFlowDispatchBuilder
 {
     public const string FlowName = BufferFlowDispatchBuilder.FlowName;
     public const string NodeId = BufferFlowDispatchBuilder.NodeId;
-    public const string ArtifactId = "twp_load_mission";
+    public const string ArtifactId = BufferFlowDispatchBuilder.ArtifactId;
     public const int ActionIdAmrToTwp = 3;
 
     static readonly JsonSerializerOptions JsonOpts = new()

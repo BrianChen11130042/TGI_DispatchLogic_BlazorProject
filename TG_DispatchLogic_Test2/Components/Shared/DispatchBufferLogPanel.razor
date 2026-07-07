@@ -3,10 +3,6 @@
 <section class="dispatch-log-section">
     <div class="dispatch-log-header">
         <h3 class="dispatch-section-title mb-0">派車紀錄</h3>
-        @if (Logs.Count > 0)
-        {
-            <button type="button" class="dispatch-log-clear-btn" @onclick="OnClear">清除紀錄</button>
-        }
     </div>
 
     @if (Logs.Count == 0)
@@ -50,5 +46,4 @@
 
 @code {
     [Parameter] public IReadOnlyList<BufferDispatchLogEntry> Logs { get; set; } = [];
-    [Parameter] public EventCallback OnClear { get; set; }
 }

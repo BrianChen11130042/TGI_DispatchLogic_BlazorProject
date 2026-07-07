@@ -200,9 +200,9 @@
                         <div>
                             <div class="equip-side-title equip-side-title-center">
                                 Cake A 側 <span class="mono">@sel.Detail.SideA.CakeBaseAddress~@sel.Detail.SideA.CakeAddressEnd</span>
-                                @if (sel.MachineId > 1)
+                                @if (sel.Detail.SideA.SharedWith is not null)
                                 {
-                                    <span class="equip-badge equip-badge-info">左側與 M@((sel.MachineId - 1).ToString("D2"))-B 共用</span>
+                                    <span class="equip-badge equip-badge-info">左側與 M@(sel.Detail.SideA.SharedWith.MachineId.ToString("D2"))-@sel.Detail.SideA.SharedWith.Side 共用</span>
                                 }
                             </div>
                             <EquipSimPortGrid Side="sel.Detail.SideA" PortType="Cake" GetValue="@(a => Addr(a))" />
@@ -210,9 +210,9 @@
                         <div>
                             <div class="equip-side-title equip-side-title-center">
                                 Cake B 側 <span class="mono">@sel.Detail.SideB.CakeBaseAddress~@sel.Detail.SideB.CakeAddressEnd</span>
-                                @if (sel.MachineId < 35)
+                                @if (sel.Detail.SideB.SharedWith is not null)
                                 {
-                                    <span class="equip-badge equip-badge-info">右側與 M@((sel.MachineId + 1).ToString("D2"))-A 共用</span>
+                                    <span class="equip-badge equip-badge-info">右側與 M@(sel.Detail.SideB.SharedWith.MachineId.ToString("D2"))-@sel.Detail.SideB.SharedWith.Side 共用</span>
                                 }
                             </div>
                             <EquipSimPortGrid Side="sel.Detail.SideB" PortType="Cake" GetValue="@(a => Addr(a))" />

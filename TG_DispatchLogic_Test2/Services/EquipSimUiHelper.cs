@@ -80,9 +80,9 @@ public static class EquipSimUiHelper
     public static string PackagingStationCode(int stationId) => $"PKP{stationId:D3}";
 
     public static string SharedSideHint(ParkingSideDto side, char columnSide) =>
-        columnSide == 'A' && side.MachineId > 1
-            ? $"左側與 M{side.MachineId - 1:D2}-B 共用"
-            : columnSide == 'B' && side.MachineId < 35
-                ? $"右側與 M{side.MachineId + 1:D2}-A 共用"
-                : "";
+        side.SharedWith is null
+            ? ""
+            : columnSide == 'A'
+                ? $"左側與 M{side.SharedWith.MachineId:D2}-{side.SharedWith.Side} 共用"
+                : $"右側與 M{side.SharedWith.MachineId:D2}-{side.SharedWith.Side} 共用";
 }
