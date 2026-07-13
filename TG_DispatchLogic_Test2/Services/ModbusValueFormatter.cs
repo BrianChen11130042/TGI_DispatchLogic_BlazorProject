@@ -37,6 +37,7 @@ public static class ModbusValueFormatter
         },
         ModbusValueKind.MachineStatus => value switch
         {
+            0 => "未設定 (0)",
             1 => "叫車 (1)",
             2 => "請啟動 (2)",
             3 => "撚紗中 (3)",

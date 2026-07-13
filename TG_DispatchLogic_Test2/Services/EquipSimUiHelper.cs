@@ -38,17 +38,19 @@ public static class EquipSimUiHelper
 
     public static string MachineStatusLabel(int status) => status switch
     {
+        0 => "未設定",
         1 => "叫車",
         2 => "請啟動",
         3 => "撚紗中",
         4 => "請下料",
         5 => "空閒",
         9 => "異常",
-        _ => $"?({status})"
+        _ => $"未知({status})"
     };
 
     public static string MachineStatusShort(int status) => status switch
     {
+        0 => "0-未設定",
         1 => "1-叫車",
         2 => "2-請啟動",
         3 => "3-撚紗中",
@@ -60,6 +62,7 @@ public static class EquipSimUiHelper
 
     public static string MachineStatusBadgeCss(int status) => status switch
     {
+        0 => "equip-badge-idle",
         1 => "equip-badge-call",
         2 => "equip-badge-start",
         3 => "equip-badge-run",

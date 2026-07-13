@@ -30,6 +30,7 @@ builder.Services.AddHttpClient<SimulateCodeApiClient>(client =>
 });
 builder.Services.AddSingleton<SimulateCodeCatalogService>();
 builder.Services.AddSingleton<ModbusEquipPollService>();
+builder.Services.AddSingleton<DispatchLogicSessionService>();
 
 var app = builder.Build();
 
