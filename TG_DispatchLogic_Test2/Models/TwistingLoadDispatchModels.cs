@@ -6,7 +6,8 @@ public record TwistingPortDispatchStatus(
     int CakeAddress,
     int RawValue,
     string Label,
-    bool NeedsCakeLoad);
+    bool NeedsCakeLoad,
+    bool NeedsCakeUnload = false);
 
 public record TwistingDockingPointEvaluation(
     string ParkingPointId,

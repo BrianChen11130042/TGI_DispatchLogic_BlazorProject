@@ -24,6 +24,7 @@ public sealed class DispatchLogicSessionService : IDisposable
 
     CancellationTokenSource? _pollCts;
     bool _pollingStarted;
+    int _autoDispatchRunning;
 
     public event Action? StateChanged;
 
@@ -59,6 +60,10 @@ public sealed class DispatchLogicSessionService : IDisposable
     public string DispatchMode { get; set; } = "manual";
     public string TwpDispatchMode { get; set; } = "manual";
     public bool TwpDispatchBusy { get; private set; }
+    public string TwpUnloadDispatchMode { get; set; } = "manual";
+    public bool TwpUnloadDispatchBusy { get; private set; }
+    public string ClrDispatchMode { get; set; } = "manual";
+    public bool ClrDispatchBusy { get; private set; }
 
     public EquipSimLiveSnapshot? Snapshot { get; private set; }
     public IReadOnlyList<BufferDispatchEvaluation>? BufferEvaluations { get; private set; }
@@ -77,12 +82,32 @@ public sealed class DispatchLogicSessionService : IDisposable
     public List<BufferDispatchLogEntry> TwpDispatchLogs { get; } = [];
     public List<TwistingLoadInFlight> TwpInFlightDispatches { get; } = [];
 
+    public IReadOnlyList<TwistingLoadMachineEvaluation>? TwpUnloadMachineEvaluations { get; private set; }
+    public IReadOnlyList<CakeVehicleDispatchStatus> TwpUnloadCakeVehicles { get; private set; } =
+        CakeVehicleDispatchEvaluator.BuildWaitingFleet(
+            "等待 TGI /v2/robots/status…",
+            DispatchFleetCatalog.TwistingUnloadCakeVehicleCodes);
+    public IReadOnlyList<TwistingLoadDispatchPair>? TwpUnloadPairings { get; private set; }
+    public List<BufferDispatchLogEntry> TwpUnloadDispatchLogs { get; } = [];
+    public List<TwistingLoadInFlight> TwpUnloadInFlightDispatches { get; } = [];
+
+    public IReadOnlyList<ClearingLoadDispatchEvaluation>? ClrStationEvaluations { get; private set; }
+    public IReadOnlyList<CakeVehicleDispatchStatus> ClrCakeVehicles { get; private set; } =
+        CakeVehicleDispatchEvaluator.BuildWaitingFleet(
+            "等待 TGI /v2/robots/status…",
+            DispatchFleetCatalog.ClearingLoadCakeVehicleCodes);
+    public IReadOnlyList<ClearingLoadDispatchPair>? ClrPairings { get; private set; }
+    public List<BufferDispatchLogEntry> ClrDispatchLogs { get; } = [];
+    public List<ClearingLoadDispatchInFlight> ClrInFlightDispatches { get; } = [];
+
     public string? AmrError { get; private set; }
     public DateTime? LastAmrRefresh { get; private set; }
     public int TgiRobotReportCount { get; private set; }
 
     DateTime? _lastBufferAutoFlowAt;
     DateTime? _lastTwpAutoFlowAt;
+    DateTime? _lastTwpUnloadAutoFlowAt;
+    DateTime? _lastClrAutoFlowAt;
     string? _token;
 
     public int DispatchableBufferCount => BufferEvaluations?.Count(e => e.IsDispatchable) ?? 0;
@@ -109,6 +134,32 @@ public sealed class DispatchLogicSessionService : IDisposable
 
     public IReadOnlyList<TwistingLoadInFlight> TwpActiveInFlightTasks =>
         TwpInFlightDispatches.Where(f => f.IsActive).ToList();
+
+    public int TwpUnloadRequestSideCount =>
+        TwpUnloadMachineEvaluations?.Count(m =>
+            m.Status == TwistingParkingRegistry.RequestUnloadStatus &&
+            m.AvailableMissions.Count > 0) ?? 0;
+
+    public int TwpUnloadAvailableMissionBlockCount => CountAvailableTwpUnloadMissionBlocks();
+
+    public int TwpUnloadActiveInFlightCount => TwpUnloadInFlightDispatches.Count(f => f.IsActive);
+
+    public IReadOnlyList<TwistingLoadInFlight> TwpUnloadActiveInFlightTasks =>
+        TwpUnloadInFlightDispatches.Where(f => f.IsActive).ToList();
+
+    public int ClrDispatchableStationCount => ClrStationEvaluations?.Count(e => e.IsDispatchable) ?? 0;
+
+    public int ClrAvailableStationCount =>
+        DispatchableClrStations.Count(s =>
+            !ClearingLoadDispatchTracker.IsStationLocked(ClrInFlightDispatches, s.ParkingPointId));
+
+    public int ClrActiveInFlightCount => ClrInFlightDispatches.Count(f => f.IsActive);
+
+    public IReadOnlyList<ClearingLoadDispatchInFlight> ClrActiveInFlightTasks =>
+        ClrInFlightDispatches.Where(f => f.IsActive).ToList();
+
+    IEnumerable<ClearingLoadDispatchEvaluation> DispatchableClrStations =>
+        ClrStationEvaluations?.Where(e => e.IsDispatchable) ?? [];
 
     public void EnsurePollingStarted()
     {
@@ -153,6 +204,30 @@ public sealed class DispatchLogicSessionService : IDisposable
         NotifyChanged();
     }
 
+    public void SetTwpUnloadDispatchModeManual()
+    {
+        TwpUnloadDispatchMode = "manual";
+        NotifyChanged();
+    }
+
+    public void SetTwpUnloadDispatchModeAuto()
+    {
+        TwpUnloadDispatchMode = "auto";
+        NotifyChanged();
+    }
+
+    public void SetClrDispatchModeManual()
+    {
+        ClrDispatchMode = "manual";
+        NotifyChanged();
+    }
+
+    public void SetClrDispatchModeAuto()
+    {
+        ClrDispatchMode = "auto";
+        NotifyChanged();
+    }
+
     public void NotifySettingsChanged() => NotifyChanged();
 
     public async Task RefreshNowAsync()
@@ -185,6 +260,28 @@ public sealed class DispatchLogicSessionService : IDisposable
             LastFleetStatuses);
     }
 
+    public bool GetTwpUnloadPairCanDispatch(TwistingLoadDispatchPair pair) => CanStartTwpUnloadPair(pair);
+
+    public string? GetTwpUnloadPairBlockReason(TwistingLoadDispatchPair pair)
+    {
+        if (CanStartTwpUnloadPair(pair)) return null;
+
+        var machine = ResolveTwpUnloadMachineEvaluation(pair.Machine.MachineId, pair.Machine.Side);
+        var blockIndex = TwistingLoadLaneAdmission.GetLaneBlockIndex(pair.MissionStops);
+        return TwistingLoadDispatchTracker.TryGetDispatchBlockReason(
+            TwpUnloadInFlightDispatches,
+            pair.Machine.MachineId,
+            pair.Machine.Side,
+            pair.Machine.TwpGroupId,
+            blockIndex,
+            pair.MissionStops.Select(s => s.ParkingPointId),
+            machine?.AvailableMissions ?? pair.Machine.AvailableMissions,
+            TwpUnloadMachineEvaluations,
+            machine?.DockingPoints ?? pair.Machine.DockingPoints,
+            LastFleetStatuses,
+            TwistingParkingRegistry.RequestUnloadStatus);
+    }
+
     public Task ResetBufferDispatchStateAsync()
     {
         InFlightDispatches.Clear();
@@ -201,6 +298,27 @@ public sealed class DispatchLogicSessionService : IDisposable
         TwpDispatchLogs.Clear();
         _lastTwpAutoFlowAt = null;
         RecomputeTwistingPairings();
+        NotifyChanged();
+        return Task.CompletedTask;
+    }
+
+    public Task ResetTwpUnloadDispatchStateAsync()
+    {
+        TwpUnloadInFlightDispatches.Clear();
+        TwpUnloadDispatchLogs.Clear();
+        _lastTwpUnloadAutoFlowAt = null;
+        RecomputeTwistingUnloadPairings();
+        NotifyChanged();
+        return Task.CompletedTask;
+    }
+
+    public Task ResetClrDispatchStateAsync()
+    {
+        ClrInFlightDispatches.Clear();
+        ClrDispatchLogs.Clear();
+        _lastClrAutoFlowAt = null;
+        RecomputeClearingLoadEvaluations();
+        RecomputeClearingLoadPairings();
         NotifyChanged();
         return Task.CompletedTask;
     }
@@ -272,6 +390,82 @@ public sealed class DispatchLogicSessionService : IDisposable
         }
     }
 
+    public async Task DispatchTwpUnloadPairManualAsync(TwistingLoadDispatchPair pair)
+    {
+        if (!await EnsureTokenAsync()) return;
+        if (!CanStartTwpUnloadPair(pair))
+        {
+            TwpUnloadDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+                DateTime.Now,
+                $"{pair.Machine.MissionKey} · {TwistingLoadMissionPlanner.FormatMissionStops(pair.MissionStops)}",
+                pair.Vehicle.AmrCode,
+                false,
+                GetTwpUnloadPairBlockReason(pair) ?? "暫不可派車",
+                null,
+                null));
+            NotifyChanged();
+            return;
+        }
+
+        TwpUnloadDispatchBusy = true;
+        NotifyChanged();
+        try
+        {
+            await DispatchTwpUnloadPairCoreAsync(pair);
+        }
+        finally
+        {
+            TwpUnloadDispatchBusy = false;
+            NotifyChanged();
+        }
+    }
+
+    public async Task DispatchClrPairManualAsync(ClearingLoadDispatchPair pair)
+    {
+        if (!await EnsureTokenAsync()) return;
+        if (IsAmrBusy(pair.Vehicle.AmrCode))
+        {
+            ClrDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+                DateTime.Now, pair.Station.ParkingPointId, pair.Vehicle.AmrCode, false,
+                "暫不可派車：此車已在任務中", null, null));
+            NotifyChanged();
+            return;
+        }
+
+        if (ClearingLoadDispatchTracker.IsStationLocked(ClrInFlightDispatches, pair.Station.ParkingPointId))
+        {
+            ClrDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+                DateTime.Now, pair.Station.ParkingPointId, pair.Vehicle.AmrCode, false,
+                $"暫不可派車：{pair.Station.ParkingPointId} 任務中鎖定", null, null));
+            NotifyChanged();
+            return;
+        }
+
+        if (ClearingLoadDispatchEvaluator.IsParkingPointOccupied(
+                LastFleetStatuses, pair.Station.ParkingPointId, out var parkedRobot))
+        {
+            ClrDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+                DateTime.Now, pair.Station.ParkingPointId, pair.Vehicle.AmrCode, false,
+                $"暫不可派車：{pair.Station.ParkingPointId} 已有 {parkedRobot} 停靠", null, null));
+            NotifyChanged();
+            return;
+        }
+
+        ClrDispatchBusy = true;
+        NotifyChanged();
+        try
+        {
+            var result = await _amrApi.TriggerFlowDiagnosticAsync(
+                _token!, pair.FlowName, pair.FlowRequest, _pollCts?.Token ?? default);
+            HandleClrDispatchResult(pair, result);
+        }
+        finally
+        {
+            ClrDispatchBusy = false;
+            NotifyChanged();
+        }
+    }
+
     void NotifyChanged() => StateChanged?.Invoke();
 
     int CountAvailableTwpMissionBlocks()
@@ -301,12 +495,44 @@ public sealed class DispatchLogicSessionService : IDisposable
         return count;
     }
 
+    int CountAvailableTwpUnloadMissionBlocks()
+    {
+        if (TwpUnloadMachineEvaluations is null) return 0;
+        var count = 0;
+        foreach (var machine in TwpUnloadMachineEvaluations)
+        {
+            if (machine.Status != TwistingParkingRegistry.RequestUnloadStatus) continue;
+            foreach (var mission in machine.AvailableMissions)
+            {
+                var laneBlockIndex = TwistingLoadLaneAdmission.GetLaneBlockIndex(mission);
+                if (TwistingLoadDispatchTracker.CanDispatchMissionBlock(
+                        TwpUnloadInFlightDispatches,
+                        machine.MachineId,
+                        machine.Side,
+                        machine.TwpGroupId,
+                        laneBlockIndex,
+                        mission.Select(s => s.ParkingPointId),
+                        machine.AvailableMissions,
+                        TwpUnloadMachineEvaluations,
+                        machine.DockingPoints,
+                        LastFleetStatuses,
+                        TwistingParkingRegistry.RequestUnloadStatus))
+                    count++;
+            }
+        }
+        return count;
+    }
+
     HashSet<string> GetBusyAmrCodes()
     {
         var codes = new List<string>();
         foreach (var f in InFlightDispatches.Where(f => f.IsActive))
             codes.Add(f.AmrCode);
         foreach (var f in TwpInFlightDispatches.Where(f => f.IsActive))
+            codes.Add(f.AmrCode);
+        foreach (var f in TwpUnloadInFlightDispatches.Where(f => f.IsActive))
+            codes.Add(f.AmrCode);
+        foreach (var f in ClrInFlightDispatches.Where(f => f.IsActive))
             codes.Add(f.AmrCode);
         return CakeVehicleDispatchEvaluator.BuildBusyAmrSet(inFlightAmrCodes: codes);
     }
@@ -349,10 +575,16 @@ public sealed class DispatchLogicSessionService : IDisposable
                     BufferDispatchEvaluator.EvaluateAll(snap),
                     LastFleetStatuses);
                 TwpMachineEvaluations = TwistingLoadDispatchEvaluator.EvaluateAll(snap);
+                TwpUnloadMachineEvaluations = TwistingUnloadDispatchEvaluator.EvaluateAll(snap);
                 RefreshInFlightStatus();
                 RefreshTwistingInFlightStatus();
+                RefreshTwistingUnloadInFlightStatus();
+                RefreshClearingLoadInFlightStatus();
+                RecomputeClearingLoadEvaluations();
                 RecomputePairings();
                 RecomputeTwistingPairings();
+                RecomputeTwistingUnloadPairings();
+                RecomputeClearingLoadPairings();
             }
 
             NotifyChanged();
@@ -369,19 +601,57 @@ public sealed class DispatchLogicSessionService : IDisposable
         TgiBusy = true;
         try
         {
+            // 只鎖住「讀 TGI / 重算配對」；派車另開通道，避免 3 flow 長任務卡住更新時間戳
             await RefreshAmrAndPairAsync();
+            NotifyChanged();
+        }
+        finally
+        {
+            TgiBusy = false;
+        }
 
+        ScheduleAutoDispatches();
+    }
+
+    void ScheduleAutoDispatches()
+    {
+        if (DispatchMode != "auto"
+            && TwpDispatchMode != "auto"
+            && TwpUnloadDispatchMode != "auto"
+            && ClrDispatchMode != "auto")
+            return;
+
+        if (Interlocked.CompareExchange(ref _autoDispatchRunning, 1, 0) != 0)
+            return;
+
+        _ = RunAutoDispatchesAsync();
+    }
+
+    async Task RunAutoDispatchesAsync()
+    {
+        try
+        {
             if (DispatchMode == "auto")
                 await TryAutoDispatchAsync();
 
             if (TwpDispatchMode == "auto")
                 await TryTwpAutoDispatchAsync();
 
+            if (TwpUnloadDispatchMode == "auto")
+                await TryTwpUnloadAutoDispatchAsync();
+
+            if (ClrDispatchMode == "auto")
+                await TryClrAutoDispatchAsync();
+
             NotifyChanged();
+        }
+        catch
+        {
+            // fire-and-forget：避免例外中斷背景；下次輪詢會再試
         }
         finally
         {
-            TgiBusy = false;
+            Interlocked.Exchange(ref _autoDispatchRunning, 0);
         }
     }
 
@@ -406,6 +676,36 @@ public sealed class DispatchLogicSessionService : IDisposable
             .Where(v => v.IsEligible && !CakeVehicleDispatchEvaluator.IsAmrInBusySet(busyAmrs, v.AmrCode))
             .ToList();
         TwpPairings = TwistingLoadPairingService.Pair(machines, vehicles, TwpInFlightDispatches, LastFleetStatuses);
+    }
+
+    void RecomputeTwistingUnloadPairings()
+    {
+        if (TwpUnloadMachineEvaluations is null) return;
+        var machines = TwpUnloadMachineEvaluations
+            .Where(m => m.Status == TwistingParkingRegistry.RequestUnloadStatus && m.AvailableMissions.Count > 0)
+            .ToList();
+        var busyAmrs = GetBusyAmrCodes();
+        var vehicles = TwpUnloadCakeVehicles
+            .Where(v => v.IsEligible && !CakeVehicleDispatchEvaluator.IsAmrInBusySet(busyAmrs, v.AmrCode))
+            .ToList();
+        TwpUnloadPairings = TwistingUnloadPairingService.Pair(
+            machines, vehicles, TwpUnloadInFlightDispatches, LastFleetStatuses);
+    }
+
+    void RecomputeClearingLoadEvaluations()
+    {
+        ClrStationEvaluations = ClearingLoadDispatchEvaluator.EvaluateAll(
+            LastFleetStatuses, ClrInFlightDispatches);
+    }
+
+    void RecomputeClearingLoadPairings()
+    {
+        if (ClrStationEvaluations is null) return;
+        var stations = DispatchableClrStations
+            .Where(s => !ClearingLoadDispatchTracker.IsStationLocked(ClrInFlightDispatches, s.ParkingPointId))
+            .ToList();
+        var busy = GetBusyAmrCodes();
+        ClrPairings = ClearingLoadPairingService.Pair(stations, ClrCakeVehicles, busy);
     }
 
     void RefreshInFlightStatus()
@@ -446,6 +746,47 @@ public sealed class DispatchLogicSessionService : IDisposable
         TwpInFlightDispatches.AddRange(TwistingLoadDispatchTracker.PruneCompleted(updated));
     }
 
+    void RefreshTwistingUnloadInFlightStatus()
+    {
+        var previous = TwpUnloadInFlightDispatches.ToList();
+        var updated = TwistingLoadDispatchTracker.Refresh(
+            TwpUnloadInFlightDispatches,
+            LastRobots,
+            TwpUnloadMachineEvaluations,
+            LastFleetStatuses,
+            forUnload: true);
+
+        foreach (var done in updated.Where(f => f.IsCompleted))
+        {
+            var wasActive = previous.Any(p =>
+                p.IsActive &&
+                p.MissionKey.Equals(done.MissionKey, StringComparison.OrdinalIgnoreCase));
+            if (wasActive)
+                AppendTwpUnloadCompletionLog(done);
+        }
+
+        TwpUnloadInFlightDispatches.Clear();
+        TwpUnloadInFlightDispatches.AddRange(TwistingLoadDispatchTracker.PruneCompleted(updated));
+    }
+
+    void RefreshClearingLoadInFlightStatus()
+    {
+        var previous = ClrInFlightDispatches.ToList();
+        var updated = ClearingLoadDispatchTracker.Refresh(ClrInFlightDispatches, LastRobots);
+
+        foreach (var done in updated.Where(f => f.IsCompleted))
+        {
+            var wasActive = previous.Any(p =>
+                p.IsActive &&
+                p.TaskId.Equals(done.TaskId, StringComparison.OrdinalIgnoreCase));
+            if (wasActive)
+                AppendClrCompletionLog(done);
+        }
+
+        ClrInFlightDispatches.Clear();
+        ClrInFlightDispatches.AddRange(ClearingLoadDispatchTracker.PruneCompleted(updated));
+    }
+
     void AppendCompletionLog(BufferDispatchInFlight flight)
     {
         DispatchLogs.Insert(0, new BufferDispatchLogEntry(
@@ -457,6 +798,20 @@ public sealed class DispatchLogicSessionService : IDisposable
     {
         TwpDispatchLogs.Insert(0, new BufferDispatchLogEntry(
             DateTime.Now, flight.MissionKey, flight.AmrCode, true,
+            $"任務完成：{flight.StatusHint}", null, null));
+    }
+
+    void AppendTwpUnloadCompletionLog(TwistingLoadInFlight flight)
+    {
+        TwpUnloadDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+            DateTime.Now, flight.MissionKey, flight.AmrCode, true,
+            $"任務完成：{flight.StatusHint}", null, null));
+    }
+
+    void AppendClrCompletionLog(ClearingLoadDispatchInFlight flight)
+    {
+        ClrDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+            DateTime.Now, flight.ParkingPointId, flight.AmrCode, true,
             $"任務完成：{flight.StatusHint}", null, null));
     }
 
@@ -494,12 +849,20 @@ public sealed class DispatchLogicSessionService : IDisposable
             LastRobots = robotResult.Data;
             RefreshInFlightStatus();
             RefreshTwistingInFlightStatus();
+            RefreshTwistingUnloadInFlightStatus();
+            RefreshClearingLoadInFlightStatus();
 
             var inFlightAmrCodes = InFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode)
-                .Concat(TwpInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode));
+                .Concat(TwpInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode))
+                .Concat(TwpUnloadInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode))
+                .Concat(ClrInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode));
             CakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleet(
                 robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, waitPoints, inFlightAmrCodes);
             TwpCakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingLoad(
+                robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
+            TwpUnloadCakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingUnload(
+                robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
+            ClrCakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForClearingLoad(
                 robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
 
             AmrError = null;
@@ -510,8 +873,11 @@ public sealed class DispatchLogicSessionService : IDisposable
                     BufferEvaluations,
                     LastFleetStatuses);
             }
+            RecomputeClearingLoadEvaluations();
             RecomputePairings();
             RecomputeTwistingPairings();
+            RecomputeTwistingUnloadPairings();
+            RecomputeClearingLoadPairings();
         }
         catch (Exception ex)
         {
@@ -593,8 +959,74 @@ public sealed class DispatchLogicSessionService : IDisposable
         return true;
     }
 
+    async Task<bool> TryDispatchNextUnloadFlowForInFlightAsync(string sequenceId)
+    {
+        if (string.IsNullOrEmpty(_token)) return false;
+
+        var idx = TwpUnloadInFlightDispatches.FindIndex(f =>
+            f.SequenceId.Equals(sequenceId, StringComparison.Ordinal));
+        if (idx < 0) return false;
+
+        var flight = TwpUnloadInFlightDispatches[idx];
+        if (flight.IsFullyDispatched) return true;
+        if (flight.CompletedStops >= flight.FlowStops.Count) return false;
+
+        var stop = flight.FlowStops[flight.CompletedStops];
+        var ct = _pollCts?.Token ?? default;
+        var result = await _amrApi.TriggerFlowDiagnosticAsync(
+            _token!, TwistingUnloadFlowDispatchBuilder.FlowName, stop.FlowRequest, ct);
+        AppendTwpUnloadDispatchLog(flight, stop, result);
+
+        if (!result.Success || result.Data is null)
+        {
+            TwpUnloadInFlightDispatches[idx] = TwistingLoadDispatchTracker.UpdateProgress(
+                flight, flight.TaskIds,
+                $"{stop.ParkingPointId} 派車失敗，{TwpDispatchRetryDelaySeconds} 秒後重試",
+                nextRetryAt: DateTime.Now.AddSeconds(TwpDispatchRetryDelaySeconds));
+            return false;
+        }
+
+        var taskId = !string.IsNullOrWhiteSpace(result.Data.TaskId)
+            ? result.Data.TaskId
+            : result.Data.FlowId;
+        if (string.IsNullOrWhiteSpace(taskId))
+        {
+            TwpUnloadInFlightDispatches[idx] = TwistingLoadDispatchTracker.UpdateProgress(
+                flight, flight.TaskIds,
+                $"{stop.ParkingPointId} 未取得 taskId，{TwpDispatchRetryDelaySeconds} 秒後重試",
+                nextRetryAt: DateTime.Now.AddSeconds(TwpDispatchRetryDelaySeconds));
+            return false;
+        }
+
+        var taskIds = flight.TaskIds.ToList();
+        taskIds.Add(taskId);
+        var now = DateTime.Now;
+        var enteredLane = TwistingLoadLaneAdmission.HasFlightEnteredLane(flight, LastFleetStatuses);
+        var laneLabel = TwistingLoadLaneAdmission.FormatTwpLane(flight.TwpGroupId);
+        var fleet = TwistingLoadLaneAdmission.ResolveFleetVehicle(LastFleetStatuses, flight.AmrCode);
+        var hint = taskIds.Count < flight.TotalFlows
+            ? enteredLane
+                ? $"已派 {taskIds.Count}/{flight.TotalFlows} flow · 已開放 {laneLabel} 下一組派車"
+                : $"已派 {taskIds.Count}/{flight.TotalFlows} flow · 等待 {flight.AmrCode} 開進 {laneLabel}（目前 {fleet?.CurrentSite ?? "—"}）"
+            : $"已派車 {flight.TotalFlows}/{flight.TotalFlows} flow，等待作業完成";
+
+        TwpUnloadInFlightDispatches[idx] = TwistingLoadDispatchTracker.UpdateProgress(
+            flight, taskIds, hint,
+            lastFlowDispatchedAt: now,
+            nextRetryAt: null,
+            hasEnteredLane: enteredLane);
+        RefreshTwistingUnloadInFlightStatus();
+        RecomputeTwistingUnloadPairings();
+        return true;
+    }
+
     TwistingLoadMachineEvaluation? ResolveTwpMachineEvaluation(int machineId, char side) =>
         TwpMachineEvaluations?.FirstOrDefault(m =>
+            m.MachineId == machineId &&
+            char.ToUpperInvariant(m.Side) == char.ToUpperInvariant(side));
+
+    TwistingLoadMachineEvaluation? ResolveTwpUnloadMachineEvaluation(int machineId, char side) =>
+        TwpUnloadMachineEvaluations?.FirstOrDefault(m =>
             m.MachineId == machineId &&
             char.ToUpperInvariant(m.Side) == char.ToUpperInvariant(side));
 
@@ -613,6 +1045,24 @@ public sealed class DispatchLogicSessionService : IDisposable
             TwpMachineEvaluations,
             machine?.DockingPoints ?? pair.Machine.DockingPoints,
             LastFleetStatuses);
+    }
+
+    bool CanStartTwpUnloadPair(TwistingLoadDispatchPair pair)
+    {
+        var machine = ResolveTwpUnloadMachineEvaluation(pair.Machine.MachineId, pair.Machine.Side);
+        var blockIndex = TwistingLoadLaneAdmission.GetLaneBlockIndex(pair.MissionStops);
+        return TwistingLoadDispatchTracker.CanDispatchMissionBlock(
+            TwpUnloadInFlightDispatches,
+            pair.Machine.MachineId,
+            pair.Machine.Side,
+            pair.Machine.TwpGroupId,
+            blockIndex,
+            pair.MissionStops.Select(s => s.ParkingPointId),
+            machine?.AvailableMissions ?? pair.Machine.AvailableMissions,
+            TwpUnloadMachineEvaluations,
+            machine?.DockingPoints ?? pair.Machine.DockingPoints,
+            LastFleetStatuses,
+            TwistingParkingRegistry.RequestUnloadStatus);
     }
 
     async Task TryAutoDispatchAsync()
@@ -661,6 +1111,54 @@ public sealed class DispatchLogicSessionService : IDisposable
         }
     }
 
+    async Task TryTwpUnloadAutoDispatchAsync()
+    {
+        if (TwpUnloadDispatchBusy || string.IsNullOrEmpty(_token)) return;
+        if (TwpUnloadPairings is null || TwpUnloadPairings.Count == 0) return;
+        if (!IsTwpAutoDispatchElapsed(_lastTwpUnloadAutoFlowAt)) return;
+
+        var pair = TwpUnloadPairings.FirstOrDefault(GetTwpUnloadPairCanDispatch);
+        if (pair is null) return;
+
+        TwpUnloadDispatchBusy = true;
+        try
+        {
+            _lastTwpUnloadAutoFlowAt = DateTime.Now;
+            await DispatchTwpUnloadPairCoreAsync(pair);
+        }
+        finally
+        {
+            TwpUnloadDispatchBusy = false;
+        }
+    }
+
+    async Task TryClrAutoDispatchAsync()
+    {
+        if (ClrPairings is null || ClrPairings.Count == 0 || ClrDispatchBusy || string.IsNullOrEmpty(_token))
+            return;
+        if (!IsTwpAutoDispatchElapsed(_lastClrAutoFlowAt)) return;
+
+        ClrDispatchBusy = true;
+        try
+        {
+            var pair = ClrPairings.FirstOrDefault(p =>
+                !IsAmrBusy(p.Vehicle.AmrCode)
+                && !ClearingLoadDispatchTracker.IsStationLocked(ClrInFlightDispatches, p.Station.ParkingPointId)
+                && !ClearingLoadDispatchEvaluator.IsParkingPointOccupied(
+                    LastFleetStatuses, p.Station.ParkingPointId, out _));
+            if (pair is null) return;
+
+            var result = await _amrApi.TriggerFlowDiagnosticAsync(
+                _token!, pair.FlowName, pair.FlowRequest, _pollCts?.Token ?? default);
+            _lastClrAutoFlowAt = DateTime.Now;
+            HandleClrDispatchResult(pair, result);
+        }
+        finally
+        {
+            ClrDispatchBusy = false;
+        }
+    }
+
     async Task DispatchTwpPairCoreAsync(TwistingLoadDispatchPair pair)
     {
         if (string.IsNullOrEmpty(_token)) return;
@@ -693,12 +1191,60 @@ public sealed class DispatchLogicSessionService : IDisposable
         NotifyChanged();
     }
 
+    async Task DispatchTwpUnloadPairCoreAsync(TwistingLoadDispatchPair pair)
+    {
+        if (string.IsNullOrEmpty(_token)) return;
+
+        var sequenceId = Guid.NewGuid().ToString("N");
+        TwpUnloadInFlightDispatches.Add(TwistingLoadDispatchTracker.Register(pair, sequenceId, []));
+        RecomputeTwistingUnloadPairings();
+        RecomputeClearingLoadPairings();
+        NotifyChanged();
+
+        var ct = _pollCts?.Token ?? default;
+        while (true)
+        {
+            var flight = TwpUnloadInFlightDispatches.FirstOrDefault(f =>
+                f.SequenceId.Equals(sequenceId, StringComparison.Ordinal));
+            if (flight is null || flight.IsFullyDispatched) break;
+            if (ct.IsCancellationRequested) break;
+
+            if (flight.NextRetryAt is not null)
+            {
+                var waitMs = (int)(flight.NextRetryAt.Value - DateTime.Now).TotalMilliseconds;
+                if (waitMs > 0)
+                    await Task.Delay(waitMs, ct);
+            }
+
+            await TryDispatchNextUnloadFlowForInFlightAsync(sequenceId);
+            NotifyChanged();
+        }
+
+        RefreshTwistingUnloadInFlightStatus();
+        NotifyChanged();
+    }
+
     void AppendTwpDispatchLog(
         TwistingLoadInFlight flight,
         TwistingLoadFlowStop stop,
         ApiCallResult result)
     {
         TwpDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+            DateTime.Now,
+            $"{flight.MissionKey} · {stop.ParkingPointId} (#{stop.StopIndex})",
+            flight.AmrCode,
+            result.Success,
+            result.Summary,
+            stop.JsonBody,
+            result.ResponseBody));
+    }
+
+    void AppendTwpUnloadDispatchLog(
+        TwistingLoadInFlight flight,
+        TwistingLoadFlowStop stop,
+        ApiCallResult result)
+    {
+        TwpUnloadDispatchLogs.Insert(0, new BufferDispatchLogEntry(
             DateTime.Now,
             $"{flight.MissionKey} · {stop.ParkingPointId} (#{stop.StopIndex})",
             flight.AmrCode,
@@ -727,11 +1273,43 @@ public sealed class DispatchLogicSessionService : IDisposable
         RecomputePairings();
     }
 
+    void HandleClrDispatchResult(ClearingLoadDispatchPair pair, ApiCallResult<TriggerFlowResultDto> result)
+    {
+        AppendClrDispatchLog(pair, result);
+        if (!result.Success || result.Data is null) return;
+
+        var taskId = !string.IsNullOrWhiteSpace(result.Data.TaskId)
+            ? result.Data.TaskId
+            : result.Data.FlowId;
+        if (string.IsNullOrWhiteSpace(taskId)) return;
+
+        ClrInFlightDispatches.Add(ClearingLoadDispatchTracker.Register(
+            pair.Station.ParkingPointId,
+            pair.Vehicle.AmrCode,
+            taskId));
+        RefreshClearingLoadInFlightStatus();
+        RecomputeClearingLoadEvaluations();
+        RecomputeClearingLoadPairings();
+        RecomputeTwistingUnloadPairings();
+    }
+
     void AppendDispatchLog(BufferDispatchPair pair, ApiCallResult result)
     {
         DispatchLogs.Insert(0, new BufferDispatchLogEntry(
             DateTime.Now,
             pair.Buffer.ParkingPointId,
+            pair.Vehicle.AmrCode,
+            result.Success,
+            result.Summary,
+            pair.JsonBody,
+            result.ResponseBody));
+    }
+
+    void AppendClrDispatchLog(ClearingLoadDispatchPair pair, ApiCallResult result)
+    {
+        ClrDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+            DateTime.Now,
+            pair.Station.ParkingPointId,
             pair.Vehicle.AmrCode,
             result.Success,
             result.Summary,

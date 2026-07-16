@@ -32,8 +32,10 @@ public static class CakeVehicleDispatchEvaluator
     public static IReadOnlyList<CakePortDispatchStatus> BuildEmptyPorts(int capacity = DefaultCakeCapacity) =>
         BuildPortStatuses(null, capacity);
 
-    public static IReadOnlyList<CakeVehicleDispatchStatus> BuildWaitingFleet(string reason = "等待 TGI /v2/robots/status…") =>
-        DispatchFleetCatalog.CakeVehicleCodes
+    public static IReadOnlyList<CakeVehicleDispatchStatus> BuildWaitingFleet(
+        string reason = "等待 TGI /v2/robots/status…",
+        IReadOnlyList<string>? vehicleCodes = null) =>
+        (vehicleCodes ?? DispatchFleetCatalog.CakeVehicleCodes)
             .Select(code => new CakeVehicleDispatchStatus(
                 code, "—", "—", 0, DefaultCakeCapacity, null, false, false, false,
                 reason, BuildEmptyPorts()))
@@ -217,6 +219,173 @@ public static class CakeVehicleDispatchEvaluator
             true,
             $"可上料（{cakeCount} Port 有 Cake 有絲）",
             ports);
+    }
+
+    /// <summary>撚紗下料用 Cake 車：需 idle、12 Port 全空（承接無絲 Cake）。</summary>
+    public static CakeVehicleDispatchStatus EvaluateForTwistingUnload(
+        RobotStatusDto? robot,
+        SimulationAmrDto? simulation,
+        FleetStatusDto? fleet,
+        string amrCode,
+        IReadOnlySet<string> busyAmrCodes,
+        ActiveSimulationTaskDto? activeTask = null)
+    {
+        var siteCode = ResolveVehicleSiteCode(fleet, simulation, robot?.State, activeTask);
+
+        if (robot is null)
+        {
+            return new CakeVehicleDispatchStatus(
+                amrCode, "—", "—", 0, DefaultCakeCapacity, siteCode, false, false, false,
+                "TGI /v2/robots/status 未回報此車",
+                BuildPortStatuses(null, DefaultCakeCapacity));
+        }
+
+        var capacity = robot.CarryingCapacity > 0 ? robot.CarryingCapacity : DefaultCakeCapacity;
+        var ports = BuildPortStatuses(robot.PortStates, capacity);
+        var carryingCount = Math.Max(robot.CarryingCount, ports.Count(p => p.RawValue != 0));
+        var dispatchEnabled = simulation?.DispatchEnabled ?? true;
+        var status = robot.State;
+
+        if (!string.Equals(robot.ConnectionStatus, "connected", StringComparison.OrdinalIgnoreCase))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "連線狀態非 connected");
+
+        if (!string.Equals(status, "idle", StringComparison.OrdinalIgnoreCase))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, $"狀態={status}（需 idle）");
+
+        if (ports.Any(p => p.RawValue != 0))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, $"車上 {carryingCount}/{capacity} Port 有料（需 12 Port 全空）");
+
+        if (IsAmrInBusySet(busyAmrCodes, robot.RobotId) || IsAmrInBusySet(busyAmrCodes, amrCode))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "有進行中任務");
+
+        if (!dispatchEnabled)
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "DispatchEnabled=false");
+
+        return new CakeVehicleDispatchStatus(
+            robot.RobotId,
+            status,
+            robot.ConnectionStatus,
+            carryingCount,
+            capacity,
+            siteCode,
+            IsParkedAtWaitingArea(fleet, [], siteCode),
+            dispatchEnabled,
+            true,
+            "可下料（12 Port 全空）",
+            ports);
+    }
+
+    public static IReadOnlyList<CakeVehicleDispatchStatus> EvaluateFleetForTwistingUnload(
+        IEnumerable<RobotStatusDto> robots,
+        IEnumerable<SimulationAmrDto>? simulationAmrs,
+        IEnumerable<ActiveSimulationTaskDto> activeTasks,
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        IEnumerable<string>? inFlightAmrCodes = null)
+    {
+        var robotMap = BuildRobotMap(robots);
+        var simMap = BuildSimulationMap(simulationAmrs);
+        var fleetMap = BuildFleetMap(fleetStatuses);
+        var busy = BuildBusyAmrSet(activeTasks, inFlightAmrCodes);
+        var taskList = activeTasks.ToList();
+
+        return DispatchFleetCatalog.TwistingUnloadCakeVehicleCodes
+            .Select(code => EvaluateForTwistingUnload(
+                ResolveRobot(robotMap, code),
+                ResolveSimulation(simMap, code),
+                ResolveFleet(fleetMap, code),
+                code,
+                busy,
+                ResolveActiveTask(taskList, code)))
+            .ToList();
+    }
+
+    /// <summary>清軸上料用 Cake 車：需 idle、12 Port 皆為無絲(1)。</summary>
+    public static CakeVehicleDispatchStatus EvaluateForClearingLoad(
+        RobotStatusDto? robot,
+        SimulationAmrDto? simulation,
+        FleetStatusDto? fleet,
+        string amrCode,
+        IReadOnlySet<string> busyAmrCodes,
+        ActiveSimulationTaskDto? activeTask = null)
+    {
+        var siteCode = ResolveVehicleSiteCode(fleet, simulation, robot?.State, activeTask);
+
+        if (robot is null)
+        {
+            return new CakeVehicleDispatchStatus(
+                amrCode, "—", "—", 0, DefaultCakeCapacity, siteCode, false, false, false,
+                "TGI /v2/robots/status 未回報此車",
+                BuildPortStatuses(null, DefaultCakeCapacity));
+        }
+
+        var capacity = robot.CarryingCapacity > 0 ? robot.CarryingCapacity : DefaultCakeCapacity;
+        var ports = BuildPortStatuses(robot.PortStates, capacity);
+        var rawSilkCount = ports.Count(p => p.RawValue == 1);
+        var carryingCount = Math.Max(robot.CarryingCount, ports.Count(p => p.RawValue != 0));
+        var dispatchEnabled = simulation?.DispatchEnabled ?? true;
+        var status = robot.State;
+
+        if (!string.Equals(robot.ConnectionStatus, "connected", StringComparison.OrdinalIgnoreCase))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "連線狀態非 connected");
+
+        if (!string.Equals(status, "idle", StringComparison.OrdinalIgnoreCase))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, $"狀態={status}（需 idle）");
+
+        if (ports.Count < capacity || ports.Any(p => p.RawValue != 1))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, $"車上僅 {rawSilkCount}/{capacity} Port 為無絲（需 12 Port 皆為 1）");
+
+        if (IsAmrInBusySet(busyAmrCodes, robot.RobotId) || IsAmrInBusySet(busyAmrCodes, amrCode))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "有進行中任務");
+
+        if (!dispatchEnabled)
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "DispatchEnabled=false");
+
+        return new CakeVehicleDispatchStatus(
+            robot.RobotId,
+            status,
+            robot.ConnectionStatus,
+            carryingCount,
+            capacity,
+            siteCode,
+            IsParkedAtWaitingArea(fleet, [], siteCode),
+            dispatchEnabled,
+            true,
+            "可清軸上料（12 Port 皆無絲）",
+            ports);
+    }
+
+    public static IReadOnlyList<CakeVehicleDispatchStatus> EvaluateFleetForClearingLoad(
+        IEnumerable<RobotStatusDto> robots,
+        IEnumerable<SimulationAmrDto>? simulationAmrs,
+        IEnumerable<ActiveSimulationTaskDto> activeTasks,
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        IEnumerable<string>? inFlightAmrCodes = null)
+    {
+        var robotMap = BuildRobotMap(robots);
+        var simMap = BuildSimulationMap(simulationAmrs);
+        var fleetMap = BuildFleetMap(fleetStatuses);
+        var busy = BuildBusyAmrSet(activeTasks, inFlightAmrCodes);
+        var taskList = activeTasks.ToList();
+
+        return DispatchFleetCatalog.ClearingLoadCakeVehicleCodes
+            .Select(code => EvaluateForClearingLoad(
+                ResolveRobot(robotMap, code),
+                ResolveSimulation(simMap, code),
+                ResolveFleet(fleetMap, code),
+                code,
+                busy,
+                ResolveActiveTask(taskList, code)))
+            .ToList();
     }
 
     static string? ResolveVehicleSiteCode(

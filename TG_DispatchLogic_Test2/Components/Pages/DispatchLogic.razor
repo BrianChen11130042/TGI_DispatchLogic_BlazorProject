@@ -8,11 +8,55 @@
 
 <div class="page-content dispatch-logic-page">
     <PageHeader Title="Buffer / 撚紗派車邏輯"
-                Subtitle="@($"Modbus 料況 + TGI {AmrApi.BaseUrl} · Cake 車 CAKE-01~12 · 全場共用狀態")" />
+                Subtitle="@($"Modbus 料況 + TGI {AmrApi.BaseUrl} · Buffer/上料 CAKE-01~12 · 下料/清軸 CAKE-13~24 · 全場共用狀態")" />
 
-    <div class="dispatch-fleet-note">
-        <span class="equip-badge equip-badge-call">Cake 車號</span>
-        @string.Join(" · ", DispatchFleetCatalog.CakeVehicleCodes)
+    <div class="dispatch-fleet-note @(_fleetTableExpanded ? "is-expanded" : "")">
+        <button type="button" class="dispatch-fleet-note-toggle" @onclick="ToggleFleetTable">
+            <div class="dispatch-fleet-note-title">
+                <span class="equip-badge equip-badge-call">車號對照</span>
+                @if (_fleetTableExpanded)
+                {
+                    <span class="parking-cat-muted small">派車動作依下列車隊區分；未規劃者日後再補</span>
+                }
+                else
+                {
+                    <span class="parking-cat-muted small">
+                        Cake @DispatchFleetCatalog.Assignments.Count(a => a.VehicleType == "Cake" && a.VehicleCodes.Count > 0) 組已規劃
+                        · Bobbin 待規劃
+                        · 共 @DispatchFleetCatalog.Assignments.Count 列
+                    </span>
+                }
+            </div>
+            <span class="dispatch-ref-chevron">@(_fleetTableExpanded ? "▲ 收合" : "▼ 展開")</span>
+        </button>
+        @if (_fleetTableExpanded)
+        {
+            <table class="parking-cat-table dispatch-fleet-table">
+                <thead>
+                    <tr>
+                        <th>派車動作</th>
+                        <th>車種</th>
+                        <th>車號範圍</th>
+                        <th>台數</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in DispatchFleetCatalog.Assignments)
+                    {
+                        <tr>
+                            <td>@row.DispatchAction</td>
+                            <td>
+                                <span class="equip-badge @(row.VehicleType == "Cake" ? "equip-badge-call" : "equip-badge-info")">
+                                    @row.VehicleType
+                                </span>
+                            </td>
+                            <td class="mono">@row.VehicleRangeLabel</td>
+                            <td class="mono">@(row.VehicleCodes.Count > 0 ? row.VehicleCodes.Count.ToString() : "—")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
     </div>
 
     <div class="equip-sim-toolbar">
@@ -59,11 +103,17 @@
 
     <div class="equip-tab-bar">
         <button type="button" class="equip-tab-btn @(Session.MainTab == "buffer" ? "active" : "")"
-                @onclick='() => Session.SetMainTab("buffer")'>Buffer 區派車</button>
+                @onclick='() => Session.SetMainTab("buffer")'>Buffer 區派Cake車</button>
         <button type="button" class="equip-tab-btn @(Session.MainTab == "twisting-load" ? "active" : "")"
-                @onclick='() => Session.SetMainTab("twisting-load")'>撚紗上料派車</button>
+                @onclick='() => Session.SetMainTab("twisting-load")'>撚紗上料派Cake車</button>
         <button type="button" class="equip-tab-btn @(Session.MainTab == "twisting-unload" ? "active" : "")"
-                @onclick='() => Session.SetMainTab("twisting-unload")'>撚紗下料派車</button>
+                @onclick='() => Session.SetMainTab("twisting-unload")'>撚紗下料派Cake車</button>
+        <button type="button" class="equip-tab-btn @(Session.MainTab == "twisting-unload-bobbin" ? "active" : "")"
+                @onclick='() => Session.SetMainTab("twisting-unload-bobbin")'>撚紗下料派Bobbin車</button>
+        <button type="button" class="equip-tab-btn @(Session.MainTab == "clearing-load" ? "active" : "")"
+                @onclick='() => Session.SetMainTab("clearing-load")'>清軸上料派Cake車</button>
+        <button type="button" class="equip-tab-btn @(Session.MainTab == "aoi-load" ? "active" : "")"
+                @onclick='() => Session.SetMainTab("aoi-load")'>AOI上料派Bobbin車</button>
     </div>
 
     @if (Session.MainTab == "buffer")
@@ -303,19 +353,250 @@
     }
     else if (Session.MainTab == "twisting-unload")
     {
+        <div class="dispatch-mode-bar">
+            <span class="equip-panel-hint mb-0">派車模式</span>
+            <button type="button" class="equip-tab-btn small @(Session.TwpUnloadDispatchMode == "manual" ? "active" : "")"
+                    @onclick="Session.SetTwpUnloadDispatchModeManual">手動（先預覽 JSON）</button>
+            <button type="button" class="equip-tab-btn small @(Session.TwpUnloadDispatchMode == "auto" ? "active" : "")"
+                    @onclick="Session.SetTwpUnloadDispatchModeAuto">自動派車</button>
+            @if (Session.TwpUnloadDispatchMode == "manual")
+            {
+                <span class="api-test-hint">一組配對依序 POST 3 次 flow（每次 4 手臂任務）</span>
+            }
+            else
+            {
+                <span class="api-test-hint">請下料狀態 + 3 停車點可下料時自動派車 · 每 @DispatchLogicSessionService.TwpAutoDispatchIntervalSeconds 秒最多派 1 組（等同按派車鍵）</span>
+            }
+            <DispatchStatusResetBar InFlightCount="Session.TwpUnloadActiveInFlightCount"
+                                    LogCount="Session.TwpUnloadDispatchLogs.Count"
+                                    OnReset="Session.ResetTwpUnloadDispatchStateAsync" />
+        </div>
+
+        <div class="equip-panel-hint">
+            狀態=請下料、尾端3停車點×4 Cake Port 皆無絲(1)、空車 CAKE-13~24、actionid=1、3次flow
+        </div>
+
+        @if (Session.Snapshot is null)
+        {
+            <p class="api-test-hint">正在讀取 Modbus 資料…</p>
+        }
+        else if (!Session.Snapshot.Success)
+        {
+            <p class="text-danger">@(Session.Snapshot.Error ?? "Modbus 讀取失敗")</p>
+        }
+        else
+        {
+            <div class="dispatch-summary @(Session.TwpUnloadAvailableMissionBlockCount > 0 ? "has-ready" : "")">
+                <strong>可派組數：@Session.TwpUnloadAvailableMissionBlockCount</strong>
+                <span>· 請下料機側：@Session.TwpUnloadRequestSideCount</span>
+                <span>· 可派 Cake 車：@(Session.TwpUnloadCakeVehicles.Count(v => v.IsEligible && !Session.IsAmrBusy(v.AmrCode)))</span>
+                <span>· 配對：@(Session.TwpUnloadPairings?.Count ?? 0) 組</span>
+                @if (Session.TwpUnloadActiveInFlightCount > 0)
+                {
+                    <span>· 任務中：@Session.TwpUnloadActiveInFlightCount</span>
+                }
+            </div>
+
+            @if (Session.TwpUnloadPairings is { Count: > 0 })
+            {
+                <section class="dispatch-section">
+                    <h3 class="dispatch-section-title">配對與派車（amr_mission · actionid=1）</h3>
+                    <div class="dispatch-pair-grid">
+                        @foreach (var pair in Session.TwpUnloadPairings)
+                        {
+                            <DispatchTwistingLoadPairCard Pair="pair"
+                                                          CanDispatch="@Session.GetTwpUnloadPairCanDispatch(pair)"
+                                                          DispatchBlockReason="@Session.GetTwpUnloadPairBlockReason(pair)"
+                                                          DispatchMode="@Session.TwpUnloadDispatchMode"
+                                                          DispatchBusy="@Session.TwpUnloadDispatchBusy"
+                                                          OnDispatch="Session.DispatchTwpUnloadPairManualAsync" />
+                        }
+                    </div>
+                </section>
+            }
+            else if (Session.TwpUnloadRequestSideCount > 0 && Session.TwpUnloadActiveInFlightCount == 0)
+            {
+                <p class="api-test-hint">有撚紗機可派車，但目前沒有可用的空閒 Cake 車可配對。</p>
+            }
+            else if (Session.TwpUnloadRequestSideCount == 0 && Session.TwpUnloadActiveInFlightCount == 0)
+            {
+                <p class="api-test-hint">目前無請下料狀態且湊滿 3 停車點的撚紗機，或無可配對車輛。</p>
+            }
+
+            <DispatchTwistingLoadInFlightPanel Tasks="Session.TwpUnloadActiveInFlightTasks" />
+            <DispatchBufferLogPanel Logs="Session.TwpUnloadDispatchLogs" />
+        }
+
+        <section class="dispatch-section dispatch-detail-section">
+            <h3 class="dispatch-section-title">
+                Cake 車 Port 明細（下料用 · CAKE-13 ~ CAKE-24）
+                <span class="parking-cat-muted small">需 12 Port 空車（無絲）</span>
+            </h3>
+            @if (Session.AmrError is not null)
+            {
+                <p class="text-danger small dispatch-tgi-hint">@Session.AmrError</p>
+            }
+            else if (Session.LastAmrRefresh is not null)
+            {
+                <p class="api-test-hint small dispatch-tgi-hint">
+                    TGI 最後更新 @Session.LastAmrRefresh.Value.ToString("HH:mm:ss")
+                </p>
+            }
+            <div class="dispatch-buffer-grid">
+                @foreach (var v in Session.TwpUnloadCakeVehicles)
+                {
+                    <DispatchCakeVehicleView Vehicle="v" />
+                }
+            </div>
+        </section>
+
+        @if (Session.Snapshot?.Success == true && Session.TwpUnloadMachineEvaluations is { Count: > 0 })
+        {
+            <section class="dispatch-section dispatch-detail-section">
+                <h3 class="dispatch-section-title">撚紗機作業明細</h3>
+                <div class="dispatch-buffer-grid">
+                    @foreach (var eval in Session.TwpUnloadMachineEvaluations)
+                    {
+                        var inFlights = Session.TwpUnloadInFlightDispatches
+                            .Where(f => f.IsActive && f.MissionKey.Equals(eval.MissionKey, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+                        <DispatchTwistingLoadMachineView Evaluation="eval" InFlights="inFlights" ForUnload="true" />
+                    }
+                </div>
+            </section>
+        }
+    }
+    else if (Session.MainTab == "twisting-unload-bobbin")
+    {
         <div class="dispatch-placeholder-card">
-            <h3>撚紗下料派車</h3>
-            <p class="api-test-hint">撚紗機下料（撚紗機 → Cake 車）派車邏輯開發中。</p>
+            <h3>撚紗下料派Bobbin車</h3>
+            <p class="api-test-hint">撚紗機下料（撚紗機 → Bobbin 車）派車邏輯開發中。</p>
+        </div>
+    }
+    else if (Session.MainTab == "clearing-load")
+    {
+        <div class="dispatch-mode-bar">
+            <span class="equip-panel-hint mb-0">派車模式</span>
+            <button type="button" class="equip-tab-btn small @(Session.ClrDispatchMode == "manual" ? "active" : "")"
+                    @onclick="Session.SetClrDispatchModeManual">手動（先預覽 JSON）</button>
+            <button type="button" class="equip-tab-btn small @(Session.ClrDispatchMode == "auto" ? "active" : "")"
+                    @onclick="Session.SetClrDispatchModeAuto">自動派車</button>
+            @if (Session.ClrDispatchMode == "manual")
+            {
+                <span class="api-test-hint">檢查 JSON 後按各組「派車」</span>
+            }
+            else
+            {
+                <span class="api-test-hint">符合配對條件時自動派車 · 每 @DispatchLogicSessionService.TwpAutoDispatchIntervalSeconds 秒最多派 1 組</span>
+            }
+            <DispatchStatusResetBar InFlightCount="Session.ClrActiveInFlightCount"
+                                    LogCount="Session.ClrDispatchLogs.Count"
+                                    OnReset="Session.ResetClrDispatchStateAsync" />
+        </div>
+
+        <div class="equip-panel-hint">
+            清軸：CLR001~005 停車點空 + 單行道可達（外側無車）· 忽略 Modbus · Cake 車 CAKE-13~24：idle、無任務、12 Port 皆無絲(1) · 一次 12 Port actionid=2 · 派車後鎖定至任務完成
+        </div>
+
+        <div class="dispatch-summary @(Session.ClrAvailableStationCount > 0 ? "has-ready" : "")">
+            <strong>清軸可派：@Session.ClrAvailableStationCount</strong>
+            <span>· 可派 Cake 車：@(Session.ClrCakeVehicles.Count(v => v.IsEligible && !Session.IsAmrBusy(v.AmrCode)))</span>
+            <span>· 配對：@(Session.ClrPairings?.Count ?? 0) 組</span>
+            @if (Session.ClrActiveInFlightCount > 0)
+            {
+                <span>· 任務中：@Session.ClrActiveInFlightCount</span>
+            }
+        </div>
+
+        @if (Session.ClrPairings is { Count: > 0 })
+        {
+            <section class="dispatch-section">
+                <h3 class="dispatch-section-title">配對與派車（amr_mission）</h3>
+                <div class="dispatch-pair-grid">
+                    @foreach (var pair in Session.ClrPairings)
+                    {
+                        <DispatchClearingLoadPairCard Pair="pair"
+                                                      DispatchMode="@Session.ClrDispatchMode"
+                                                      DispatchBusy="@Session.ClrDispatchBusy"
+                                                      OnDispatch="Session.DispatchClrPairManualAsync" />
+                    }
+                </div>
+            </section>
+        }
+        else if (Session.ClrDispatchableStationCount > 0 && Session.ClrActiveInFlightCount == 0)
+        {
+            <p class="api-test-hint">有清軸站可派車，但目前沒有可用的無絲 Cake 車可配對。</p>
+        }
+        else if (Session.ClrDispatchableStationCount == 0 && Session.ClrActiveInFlightCount == 0)
+        {
+            <p class="api-test-hint">目前無符合條件的清軸站或配對。</p>
+        }
+
+        <DispatchClearingLoadInFlightPanel Tasks="Session.ClrActiveInFlightTasks" />
+        <DispatchBufferLogPanel Logs="Session.ClrDispatchLogs" />
+
+        <section class="dispatch-section dispatch-detail-section">
+            <h3 class="dispatch-section-title">
+                Cake 車 Port 明細（CAKE-13 ~ CAKE-24）
+                <span class="parking-cat-muted small">需 12 Port 皆為無絲(1) · GET /v2/robots/status</span>
+            </h3>
+            @if (Session.AmrError is not null)
+            {
+                <p class="text-danger small dispatch-tgi-hint">@Session.AmrError</p>
+            }
+            else if (Session.LastAmrRefresh is not null)
+            {
+                <p class="api-test-hint small dispatch-tgi-hint">
+                    TGI 最後更新 @Session.LastAmrRefresh.Value.ToString("HH:mm:ss") · API 回報 @Session.TgiRobotReportCount 台
+                </p>
+            }
+            else
+            {
+                <p class="api-test-hint small dispatch-tgi-hint">等待 TGI 連線…</p>
+            }
+            <div class="dispatch-buffer-grid">
+                @foreach (var v in Session.ClrCakeVehicles)
+                {
+                    <DispatchCakeVehicleView Vehicle="v" />
+                }
+            </div>
+        </section>
+
+        @if (Session.ClrStationEvaluations is { Count: > 0 })
+        {
+            <section class="dispatch-section dispatch-detail-section">
+                <h3 class="dispatch-section-title">清軸站明細（CLR001 最內 → CLR005 最外）</h3>
+                <div class="dispatch-buffer-grid">
+                    @foreach (var eval in Session.ClrStationEvaluations)
+                    {
+                        var inFlight = Session.ClrInFlightDispatches.FirstOrDefault(f =>
+                            f.IsActive &&
+                            f.ParkingPointId.Equals(eval.ParkingPointId, StringComparison.OrdinalIgnoreCase));
+                        <DispatchClearingLoadStationView Evaluation="eval" InFlight="inFlight" />
+                    }
+                </div>
+            </section>
+        }
+    }
+    else if (Session.MainTab == "aoi-load")
+    {
+        <div class="dispatch-placeholder-card">
+            <h3>AOI上料派Bobbin車</h3>
+            <p class="api-test-hint">AOI 上料（Bobbin 車 → AOI 包裝站）派車邏輯開發中。</p>
         </div>
     }
 </div>
 
 @code {
+    bool _fleetTableExpanded;
+
     protected override void OnInitialized()
     {
         Session.StateChanged += OnSessionStateChanged;
         Session.EnsurePollingStarted();
     }
+
+    void ToggleFleetTable() => _fleetTableExpanded = !_fleetTableExpanded;
 
     void OnSessionStateChanged() => InvokeAsync(StateHasChanged);
 

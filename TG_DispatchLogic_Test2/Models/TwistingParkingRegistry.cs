@@ -10,6 +10,7 @@ public static class TwistingParkingRegistry
     public const int PortsPerLoadMission = PortsPerDockingPoint * StopsPerLoadMission;
     public const int DockingPointsPerSide = 21;
     public const int CallVehicleStatus = 1;
+    public const int RequestUnloadStatus = 4;
     public const int MaxConcurrentMissionsPerSide = 7;
 
     static readonly Lazy<ParkingCatalogDto> Catalog = new(Services.SimulateCodeParkingCatalogBuilder.Build);

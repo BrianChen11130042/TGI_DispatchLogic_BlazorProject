@@ -24,7 +24,7 @@
     {
         <div class="parking-cat-card-body dispatch-ref-body">
             <div class="parking-cat-muted small dispatch-ref-meta">
-                每停車點 4 Cake Port · 上料任務需 @TwistingParkingRegistry.StopsPerLoadMission 停車點
+                每停車點 4 Cake Port · @(ForUnload ? "下料" : "上料")任務需 @TwistingParkingRegistry.StopsPerLoadMission 停車點
             </div>
 
             @foreach (var point in Evaluation.DockingPoints)
@@ -34,7 +34,7 @@
                         <span class="equip-badge equip-badge-call">@point.ParkingPointId</span>
                         <span class="parking-cat-muted small">D@(point.DNumber) · Seq @point.Sequence</span>
                         <span class="dispatch-status-badge @(point.IsDispatchable ? "ok" : "wait") small-badge">
-                            @(point.IsDispatchable ? "待上料" : "—")
+                            @(point.IsDispatchable ? (ForUnload ? "待下料" : "待上料") : "—")
                         </span>
                     </div>
                     <table class="parking-cat-table dispatch-ref-table">
@@ -70,6 +70,7 @@
 @code {
     [Parameter, EditorRequired] public TwistingLoadMachineEvaluation Evaluation { get; set; } = default!;
     [Parameter] public IReadOnlyList<TwistingLoadInFlight> InFlights { get; set; } = [];
+    [Parameter] public bool ForUnload { get; set; }
 
     bool _expanded;
 
@@ -79,7 +80,10 @@
         {
             if (InFlights.Count > 0) return "busy";
             if (Evaluation.IsDispatchable) return "ok";
-            return Evaluation.Status == TwistingParkingRegistry.CallVehicleStatus ? "warn" : "wait";
+            return Evaluation.Status == TwistingParkingRegistry.CallVehicleStatus
+                   || Evaluation.Status == TwistingParkingRegistry.RequestUnloadStatus
+                ? "warn"
+                : "wait";
         }
     }
 
@@ -89,6 +93,7 @@
         {
             if (InFlights.Count > 0) return $"作業中（{InFlights.Count}車）";
             if (Evaluation.IsDispatchable) return "可派車";
+            if (Evaluation.Status == TwistingParkingRegistry.RequestUnloadStatus) return "請下料";
             return Evaluation.Status == TwistingParkingRegistry.CallVehicleStatus ? "待湊滿停車點" : Evaluation.StatusLabel;
         }
     }

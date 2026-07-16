@@ -30,13 +30,15 @@ public static class TwistingLoadDispatchTracker
         IReadOnlyList<IReadOnlyList<TwistingDockingPointEvaluation>>? availableMissions = null,
         IReadOnlyList<TwistingLoadMachineEvaluation>? allMachines = null,
         IReadOnlyList<TwistingDockingPointEvaluation>? dockingPoints = null,
-        IEnumerable<FleetStatusDto>? fleetStatuses = null)
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        int requiredStatus = TwistingParkingRegistry.CallVehicleStatus)
     {
         if (CountActiveMissionsOnSide(flights, machineId, side) >= TwistingParkingRegistry.MaxConcurrentMissionsPerSide)
             return false;
 
         if (allMachines is not null &&
-            !TwistingLoadLaneAdmission.IsMachineAdmissionGranted(machineId, allMachines, flights, fleetStatuses))
+            !TwistingLoadLaneAdmission.IsMachineAdmissionGranted(
+                machineId, allMachines, flights, fleetStatuses, requiredStatus))
             return false;
 
         if (!TwistingLoadLaneAdmission.IsLaneAdmissionGranted(
@@ -56,7 +58,8 @@ public static class TwistingLoadDispatchTracker
         IReadOnlyList<IReadOnlyList<TwistingDockingPointEvaluation>>? availableMissions = null,
         IReadOnlyList<TwistingLoadMachineEvaluation>? allMachines = null,
         IReadOnlyList<TwistingDockingPointEvaluation>? dockingPoints = null,
-        IEnumerable<FleetStatusDto>? fleetStatuses = null)
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        int requiredStatus = TwistingParkingRegistry.CallVehicleStatus)
     {
         if (CountActiveMissionsOnSide(flights, machineId, side) >= TwistingParkingRegistry.MaxConcurrentMissionsPerSide)
             return $"同側已達最多 {TwistingParkingRegistry.MaxConcurrentMissionsPerSide} 組任務";
@@ -64,7 +67,7 @@ public static class TwistingLoadDispatchTracker
         if (allMachines is not null)
         {
             var machineReason = TwistingLoadLaneAdmission.TryGetMachineBlockReason(
-                machineId, allMachines, flights, fleetStatuses);
+                machineId, allMachines, flights, fleetStatuses, requiredStatus);
             if (machineReason is not null)
                 return machineReason;
         }
@@ -135,14 +138,15 @@ public static class TwistingLoadDispatchTracker
         IEnumerable<TwistingLoadInFlight> flights,
         IReadOnlyList<RobotStatusDto> robots,
         IReadOnlyList<TwistingLoadMachineEvaluation>? machineEvaluations,
-        IEnumerable<FleetStatusDto>? fleetStatuses = null)
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        bool forUnload = false)
     {
         var robotMap = BuildRobotMap(robots);
         var evalMap = machineEvaluations?
             .ToDictionary(m => m.MissionKey, StringComparer.OrdinalIgnoreCase)
             ?? new Dictionary<string, TwistingLoadMachineEvaluation>(StringComparer.OrdinalIgnoreCase);
 
-        return flights.Select(f => RefreshOne(f, robotMap, evalMap, fleetStatuses)).ToList();
+        return flights.Select(f => RefreshOne(f, robotMap, evalMap, fleetStatuses, forUnload)).ToList();
     }
 
     public static List<TwistingLoadInFlight> PruneCompleted(IEnumerable<TwistingLoadInFlight> flights) =>
@@ -152,7 +156,8 @@ public static class TwistingLoadDispatchTracker
         TwistingLoadInFlight flight,
         Dictionary<string, RobotStatusDto> robotMap,
         Dictionary<string, TwistingLoadMachineEvaluation> evalMap,
-        IEnumerable<FleetStatusDto>? fleetStatuses)
+        IEnumerable<FleetStatusDto>? fleetStatuses,
+        bool forUnload)
     {
         if (flight.IsCompleted) return flight;
 
@@ -172,6 +177,7 @@ public static class TwistingLoadDispatchTracker
         var laneLabel = TwistingLoadLaneAdmission.FormatTwpLane(flight.TwpGroupId);
         var fleet = TwistingLoadLaneAdmission.ResolveFleetVehicle(fleetStatuses, flight.AmrCode);
         var currentSite = fleet?.CurrentSite ?? "—";
+        var progressVerb = forUnload ? "已下料" : "已上料";
 
         if (robot is not null && IsRobotBusy(robot))
             sawBusy = true;
@@ -196,7 +202,7 @@ public static class TwistingLoadDispatchTracker
             };
         }
 
-        var loadedCount = CountLoadedMissionPoints(flight, eval);
+        var doneCount = CountFinishedMissionPoints(flight, eval, forUnload);
 
         if (robot is null)
         {
@@ -205,8 +211,8 @@ public static class TwistingLoadDispatchTracker
                 SawRobotBusy = sawBusy,
                 HasEnteredLane = hasEnteredLane,
                 StatusHint = sawBusy
-                    ? $"作業中 · 停車點已上料 {loadedCount}/{flight.ParkingPointIds.Count} · 車輛暫時離線"
-                    : $"已派車，等待 TGI 回報車輛狀態 · 停車點已上料 {loadedCount}/{flight.ParkingPointIds.Count}"
+                    ? $"作業中 · 停車點{progressVerb} {doneCount}/{flight.ParkingPointIds.Count} · 車輛暫時離線"
+                    : $"已派車，等待 TGI 回報車輛狀態 · 停車點{progressVerb} {doneCount}/{flight.ParkingPointIds.Count}"
             };
         }
 
@@ -215,7 +221,7 @@ public static class TwistingLoadDispatchTracker
             return flight with
             {
                 HasEnteredLane = hasEnteredLane,
-                StatusHint = $"已派車（{robot.State}），等待車輛開始作業 · 停車點已上料 {loadedCount}/{flight.ParkingPointIds.Count}"
+                StatusHint = $"已派車（{robot.State}），等待車輛開始作業 · 停車點{progressVerb} {doneCount}/{flight.ParkingPointIds.Count}"
             };
         }
 
@@ -225,42 +231,57 @@ public static class TwistingLoadDispatchTracker
             {
                 SawRobotBusy = true,
                 HasEnteredLane = hasEnteredLane,
-                StatusHint = $"作業中 · {robot.State} · 停車點已上料 {loadedCount}/{flight.ParkingPointIds.Count}"
+                StatusHint = $"作業中 · {robot.State} · 停車點{progressVerb} {doneCount}/{flight.ParkingPointIds.Count}"
             };
         }
 
-        if (AreMissionPointsLoaded(flight, eval))
+        if (AreMissionPointsFinished(flight, eval, forUnload))
         {
             return Complete(flight, true, hasEnteredLane,
-                $"任務完成 · {flight.ParkingPointIds.Count} 停車點 Cake 已上料 · 車輛 {robot.State}");
+                forUnload
+                    ? $"任務完成 · {flight.ParkingPointIds.Count} 停車點 Cake 已下料 · 車輛 {robot.State}"
+                    : $"任務完成 · {flight.ParkingPointIds.Count} 停車點 Cake 已上料 · 車輛 {robot.State}");
         }
 
         return flight with
         {
             SawRobotBusy = sawBusy,
             HasEnteredLane = hasEnteredLane,
-            StatusHint = $"車輛已回 idle，等待停車點上料完成（{loadedCount}/{flight.ParkingPointIds.Count}）"
+            StatusHint = $"車輛已回 idle，等待停車點{(forUnload ? "下料" : "上料")}完成（{doneCount}/{flight.ParkingPointIds.Count}）"
         };
     }
 
-    static int CountLoadedMissionPoints(TwistingLoadInFlight flight, TwistingLoadMachineEvaluation? eval)
+    static int CountFinishedMissionPoints(
+        TwistingLoadInFlight flight,
+        TwistingLoadMachineEvaluation? eval,
+        bool forUnload)
     {
         if (eval is null) return 0;
         var map = eval.DockingPoints.ToDictionary(p => p.ParkingPointId, StringComparer.OrdinalIgnoreCase);
         return flight.ParkingPointIds.Count(id =>
-            map.TryGetValue(id, out var pt) && IsPointFullyLoaded(pt));
+            map.TryGetValue(id, out var pt) && IsPointFinished(pt, forUnload));
     }
 
-    static bool AreMissionPointsLoaded(TwistingLoadInFlight flight, TwistingLoadMachineEvaluation? eval)
+    static bool AreMissionPointsFinished(
+        TwistingLoadInFlight flight,
+        TwistingLoadMachineEvaluation? eval,
+        bool forUnload)
     {
         if (eval is null || flight.ParkingPointIds.Count == 0) return false;
         var map = eval.DockingPoints.ToDictionary(p => p.ParkingPointId, StringComparer.OrdinalIgnoreCase);
         return flight.ParkingPointIds.All(id =>
-            map.TryGetValue(id, out var pt) && IsPointFullyLoaded(pt));
+            map.TryGetValue(id, out var pt) && IsPointFinished(pt, forUnload));
     }
+
+    static bool IsPointFinished(TwistingDockingPointEvaluation point, bool forUnload) =>
+        forUnload ? IsPointFullyUnloaded(point) : IsPointFullyLoaded(point);
 
     static bool IsPointFullyLoaded(TwistingDockingPointEvaluation point) =>
         point.CakePorts.Count > 0 && point.CakePorts.All(p => !p.NeedsCakeLoad);
+
+    /// <summary>下料完成：停車點已無待下料（無絲）Cake。</summary>
+    public static bool IsPointFullyUnloaded(TwistingDockingPointEvaluation point) =>
+        point.CakePorts.Count > 0 && point.CakePorts.All(p => !p.NeedsCakeUnload);
 
     static bool IsRobotBusy(RobotStatusDto robot) =>
         !string.Equals(robot.State, "idle", StringComparison.OrdinalIgnoreCase);

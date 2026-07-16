@@ -35,11 +35,12 @@ public static class TwistingLoadLaneAdmission
         int machineId,
         IReadOnlyList<TwistingLoadMachineEvaluation> allMachines,
         IEnumerable<TwistingLoadInFlight> flights,
-        IEnumerable<FleetStatusDto>? fleetStatuses = null)
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        int requiredStatus = TwistingParkingRegistry.CallVehicleStatus)
     {
         foreach (var eval in allMachines.Where(m =>
                      m.MachineId < machineId &&
-                     m.Status == TwistingParkingRegistry.CallVehicleStatus))
+                     m.Status == requiredStatus))
         {
             if (!IsSideTailLaneCleared(eval, flights, fleetStatuses))
                 return false;
@@ -52,10 +53,11 @@ public static class TwistingLoadLaneAdmission
         int machineId,
         IReadOnlyList<TwistingLoadMachineEvaluation> allMachines,
         IEnumerable<TwistingLoadInFlight> flights,
-        IEnumerable<FleetStatusDto>? fleetStatuses = null)
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        int requiredStatus = TwistingParkingRegistry.CallVehicleStatus)
     {
         foreach (var eval in allMachines
-                     .Where(m => m.MachineId < machineId && m.Status == TwistingParkingRegistry.CallVehicleStatus)
+                     .Where(m => m.MachineId < machineId && m.Status == requiredStatus)
                      .OrderBy(m => m.MachineId)
                      .ThenBy(m => m.Side))
         {
