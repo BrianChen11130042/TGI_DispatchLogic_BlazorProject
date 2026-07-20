@@ -24,7 +24,15 @@
     {
         <div class="parking-cat-card-body dispatch-ref-body">
             <div class="parking-cat-muted small dispatch-ref-meta">
-                每停車點 4 Cake Port · @(ForUnload ? "下料" : "上料")任務需 @TwistingParkingRegistry.StopsPerLoadMission 停車點
+                每停車點 4 @(ForBobbinUnload ? "Bobbin" : "Cake") Port ·
+                @(ForUnload || ForBobbinUnload ? "下料" : "上料")任務需
+                @(ForBobbinUnload
+                    ? TwistingParkingRegistry.StopsPerBobbinUnloadMission
+                    : TwistingParkingRegistry.StopsPerLoadMission) 停車點
+                @if (ForBobbinUnload && Evaluation.HasBobbinRemainderOnly)
+                {
+                    <text> · 殘餘 3 停就緒</text>
+                }
             </div>
 
             @foreach (var point in Evaluation.DockingPoints)
@@ -34,7 +42,9 @@
                         <span class="equip-badge equip-badge-call">@point.ParkingPointId</span>
                         <span class="parking-cat-muted small">D@(point.DNumber) · Seq @point.Sequence</span>
                         <span class="dispatch-status-badge @(point.IsDispatchable ? "ok" : "wait") small-badge">
-                            @(point.IsDispatchable ? (ForUnload ? "待下料" : "待上料") : "—")
+                            @(point.IsDispatchable
+                                ? (ForUnload || ForBobbinUnload ? "待下料" : "待上料")
+                                : "—")
                         </span>
                     </div>
                     <table class="parking-cat-table dispatch-ref-table">
@@ -62,7 +72,9 @@
                     </table>
                 </div>
             }
-            <div class="parking-cat-muted small dispatch-ref-legend">Cake Port：0=空 · 1=無絲 · 2=有絲 · 9=異常</div>
+            <div class="parking-cat-muted small dispatch-ref-legend">
+                @(ForBobbinUnload ? "Bobbin" : "Cake") Port：0=空 · 1=無絲 · 2=有絲 · 9=異常
+            </div>
         </div>
     }
 </div>
@@ -71,6 +83,7 @@
     [Parameter, EditorRequired] public TwistingLoadMachineEvaluation Evaluation { get; set; } = default!;
     [Parameter] public IReadOnlyList<TwistingLoadInFlight> InFlights { get; set; } = [];
     [Parameter] public bool ForUnload { get; set; }
+    [Parameter] public bool ForBobbinUnload { get; set; }
 
     bool _expanded;
 
@@ -79,7 +92,7 @@
         get
         {
             if (InFlights.Count > 0) return "busy";
-            if (Evaluation.IsDispatchable) return "ok";
+            if (Evaluation.IsDispatchable || (ForBobbinUnload && Evaluation.HasBobbinRemainderOnly)) return "ok";
             return Evaluation.Status == TwistingParkingRegistry.CallVehicleStatus
                    || Evaluation.Status == TwistingParkingRegistry.RequestUnloadStatus
                 ? "warn"
@@ -93,6 +106,7 @@
         {
             if (InFlights.Count > 0) return $"作業中（{InFlights.Count}車）";
             if (Evaluation.IsDispatchable) return "可派車";
+            if (ForBobbinUnload && Evaluation.HasBobbinRemainderOnly) return "殘餘就緒";
             if (Evaluation.Status == TwistingParkingRegistry.RequestUnloadStatus) return "請下料";
             return Evaluation.Status == TwistingParkingRegistry.CallVehicleStatus ? "待湊滿停車點" : Evaluation.StatusLabel;
         }
@@ -103,7 +117,9 @@
         get
         {
             if (InFlights.Count > 0) return "in-flight";
-            return Evaluation.IsDispatchable ? "" : "not-dispatchable";
+            return Evaluation.IsDispatchable || (ForBobbinUnload && Evaluation.HasBobbinRemainderOnly)
+                ? ""
+                : "not-dispatchable";
         }
     }
 

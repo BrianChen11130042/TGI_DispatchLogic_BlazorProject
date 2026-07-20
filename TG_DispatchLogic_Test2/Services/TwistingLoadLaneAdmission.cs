@@ -3,32 +3,34 @@ using TG_DispatchLogic_Test2.Models;
 namespace TG_DispatchLogic_Test2.Services;
 
 /// <summary>
-/// 撚紗上料優先權（由大到小）：
+/// 撚紗派車走道優先權（由大到小）：
 /// 1. 撚紗機（M01 → M02 → …）
 /// 2. 同機左右走道（各 TWP 群組互不擋，可同時派尾端組）
-/// 3. 同走道內尾端往前（19~21 → 16~18 → …，前組須進入走道才開放後組）
+/// 3. 同走道內尾端往前（前組須進入走道才開放後組）
 /// </summary>
 public static class TwistingLoadLaneAdmission
 {
     public static string FormatTwpLane(int twpGroupId) => $"TWP{twpGroupId:D2}";
 
-    public static int GetLaneBlockIndex(IReadOnlyList<TwistingDockingPointEvaluation> stops)
+    public static int GetLaneBlockIndex(
+        IReadOnlyList<TwistingDockingPointEvaluation> stops,
+        int stopsPerMission = TwistingParkingRegistry.StopsPerLoadMission)
     {
         if (stops.Count == 0) return int.MaxValue;
         var maxSeq = stops.Max(s => s.Sequence);
-        return (TwistingParkingRegistry.DockingPointsPerSide - maxSeq)
-               / TwistingParkingRegistry.StopsPerLoadMission;
+        return (TwistingParkingRegistry.DockingPointsPerSide - maxSeq) / stopsPerMission;
     }
 
-    public static int GetLaneBlockIndex(IReadOnlyList<string> parkingPointIds)
+    public static int GetLaneBlockIndex(
+        IReadOnlyList<string> parkingPointIds,
+        int stopsPerMission = TwistingParkingRegistry.StopsPerLoadMission)
     {
         if (parkingPointIds.Count == 0) return int.MaxValue;
         var maxSeq = parkingPointIds
             .Select(ParseSequenceFromParkingPointId)
             .DefaultIfEmpty(0)
             .Max();
-        return (TwistingParkingRegistry.DockingPointsPerSide - maxSeq)
-               / TwistingParkingRegistry.StopsPerLoadMission;
+        return (TwistingParkingRegistry.DockingPointsPerSide - maxSeq) / stopsPerMission;
     }
 
     public static bool IsMachineAdmissionGranted(
@@ -36,13 +38,15 @@ public static class TwistingLoadLaneAdmission
         IReadOnlyList<TwistingLoadMachineEvaluation> allMachines,
         IEnumerable<TwistingLoadInFlight> flights,
         IEnumerable<FleetStatusDto>? fleetStatuses = null,
-        int requiredStatus = TwistingParkingRegistry.CallVehicleStatus)
+        int requiredStatus = TwistingParkingRegistry.CallVehicleStatus,
+        int stopsPerMission = TwistingParkingRegistry.StopsPerLoadMission)
     {
         foreach (var eval in allMachines.Where(m =>
                      m.MachineId < machineId &&
-                     m.Status == requiredStatus))
+                     m.Status == requiredStatus &&
+                     m.Side is not ('X' or 'x')))
         {
-            if (!IsSideTailLaneCleared(eval, flights, fleetStatuses))
+            if (!IsSideTailLaneCleared(eval, flights, fleetStatuses, stopsPerMission))
                 return false;
         }
 
@@ -54,14 +58,15 @@ public static class TwistingLoadLaneAdmission
         IReadOnlyList<TwistingLoadMachineEvaluation> allMachines,
         IEnumerable<TwistingLoadInFlight> flights,
         IEnumerable<FleetStatusDto>? fleetStatuses = null,
-        int requiredStatus = TwistingParkingRegistry.CallVehicleStatus)
+        int requiredStatus = TwistingParkingRegistry.CallVehicleStatus,
+        int stopsPerMission = TwistingParkingRegistry.StopsPerLoadMission)
     {
         foreach (var eval in allMachines
-                     .Where(m => m.MachineId < machineId && m.Status == requiredStatus)
+                     .Where(m => m.MachineId < machineId && m.Status == requiredStatus && m.Side is not ('X' or 'x'))
                      .OrderBy(m => m.MachineId)
                      .ThenBy(m => m.Side))
         {
-            if (IsSideTailLaneCleared(eval, flights, fleetStatuses))
+            if (IsSideTailLaneCleared(eval, flights, fleetStatuses, stopsPerMission))
                 continue;
 
             return TryGetPriorLaneBlockReason(
@@ -71,7 +76,8 @@ public static class TwistingLoadLaneAdmission
                 eval.AvailableMissions,
                 eval.DockingPoints,
                 eval.MachineCode,
-                fleetStatuses: fleetStatuses);
+                fleetStatuses: fleetStatuses,
+                stopsPerMission: stopsPerMission);
         }
 
         return null;
@@ -83,21 +89,23 @@ public static class TwistingLoadLaneAdmission
         int blockIndex,
         IReadOnlyList<IReadOnlyList<TwistingDockingPointEvaluation>> availableMissions,
         IReadOnlyList<TwistingDockingPointEvaluation>? dockingPoints = null,
-        IEnumerable<FleetStatusDto>? fleetStatuses = null)
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        int stopsPerMission = TwistingParkingRegistry.StopsPerLoadMission)
     {
         if (blockIndex <= 0) return true;
 
         var activeOnLane = flights
-            .Where(f => f.IsActive && f.TwpGroupId == twpGroupId)
+            .Where(f => f.IsActive && IsFlightOnLane(f, twpGroupId))
             .ToList();
 
         if (activeOnLane.Any(f =>
-                f.LaneBlockIndex < blockIndex && !HasFlightEnteredLane(f, fleetStatuses)))
+                f.LaneBlockIndex < blockIndex && !HasFlightEnteredSpecificLane(f, twpGroupId, fleetStatuses)))
             return false;
 
         for (var i = 0; i < blockIndex; i++)
         {
-            if (!IsPriorLaneBlockSatisfied(flights, twpGroupId, i, availableMissions, dockingPoints, fleetStatuses))
+            if (!IsPriorLaneBlockSatisfied(
+                    flights, twpGroupId, i, availableMissions, dockingPoints, fleetStatuses, stopsPerMission))
                 return false;
         }
 
@@ -110,17 +118,18 @@ public static class TwistingLoadLaneAdmission
         int blockIndex,
         IReadOnlyList<IReadOnlyList<TwistingDockingPointEvaluation>> availableMissions,
         IReadOnlyList<TwistingDockingPointEvaluation>? dockingPoints = null,
-        IEnumerable<FleetStatusDto>? fleetStatuses = null)
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        int stopsPerMission = TwistingParkingRegistry.StopsPerLoadMission)
     {
         if (blockIndex <= 0) return null;
 
         var laneLabel = FormatTwpLane(twpGroupId);
         var activeOnLane = flights
-            .Where(f => f.IsActive && f.TwpGroupId == twpGroupId)
+            .Where(f => f.IsActive && IsFlightOnLane(f, twpGroupId))
             .ToList();
 
         var waitingEntry = activeOnLane
-            .Where(f => f.LaneBlockIndex < blockIndex && !HasFlightEnteredLane(f, fleetStatuses))
+            .Where(f => f.LaneBlockIndex < blockIndex && !HasFlightEnteredSpecificLane(f, twpGroupId, fleetStatuses))
             .OrderBy(f => f.LaneBlockIndex)
             .FirstOrDefault();
         if (waitingEntry is not null)
@@ -128,23 +137,40 @@ public static class TwistingLoadLaneAdmission
 
         for (var i = 0; i < blockIndex; i++)
         {
-            if (IsPriorLaneBlockSatisfied(flights, twpGroupId, i, availableMissions, dockingPoints, fleetStatuses))
+            if (IsPriorLaneBlockSatisfied(
+                    flights, twpGroupId, i, availableMissions, dockingPoints, fleetStatuses, stopsPerMission))
                 continue;
 
             return TryGetPriorLaneBlockReason(
-                flights, twpGroupId, i, availableMissions, dockingPoints, laneLabel: laneLabel, fleetStatuses: fleetStatuses);
+                flights, twpGroupId, i, availableMissions, dockingPoints,
+                laneLabel: laneLabel, fleetStatuses: fleetStatuses, stopsPerMission: stopsPerMission);
         }
 
         return null;
     }
 
     /// <summary>
-    /// 車輛 current_site 已在該 TWP 走道任一站點（如 TWP01-19）視為已進入走道。
+    /// 車輛 current_site 已在該任務任一相關 TWP 走道視為已進入走道。
     /// </summary>
     public static bool HasFlightEnteredLane(
         TwistingLoadInFlight flight,
+        IEnumerable<FleetStatusDto>? fleetStatuses)
+    {
+        var vehicle = ResolveFleetVehicle(fleetStatuses, flight.AmrCode);
+        if (IsVehicleOnTwpLane(vehicle, flight.TwpGroupId))
+            return true;
+        return flight.SecondaryTwpGroupId is int secondary
+               && IsVehicleOnTwpLane(vehicle, secondary);
+    }
+
+    public static bool HasFlightEnteredSpecificLane(
+        TwistingLoadInFlight flight,
+        int twpGroupId,
         IEnumerable<FleetStatusDto>? fleetStatuses) =>
-        IsVehicleOnTwpLane(ResolveFleetVehicle(fleetStatuses, flight.AmrCode), flight.TwpGroupId);
+        IsVehicleOnTwpLane(ResolveFleetVehicle(fleetStatuses, flight.AmrCode), twpGroupId);
+
+    public static bool IsFlightOnLane(TwistingLoadInFlight flight, int twpGroupId) =>
+        flight.TwpGroupId == twpGroupId || flight.SecondaryTwpGroupId == twpGroupId;
 
     public static bool IsVehicleOnTwpLane(FleetStatusDto? vehicle, int twpGroupId)
     {
@@ -172,7 +198,7 @@ public static class TwistingLoadLaneAdmission
     }
 
     /// <summary>
-    /// 前序走道組已滿足：執行中車輛已開進走道、已上料完成、或該組已無待派停車點。
+    /// 前序走道組已滿足：執行中車輛已開進走道、該組已無待派停車點、或區塊料況已處理完。
     /// </summary>
     public static bool IsPriorLaneBlockSatisfied(
         IEnumerable<TwistingLoadInFlight> flights,
@@ -180,17 +206,18 @@ public static class TwistingLoadLaneAdmission
         int priorBlockIndex,
         IReadOnlyList<IReadOnlyList<TwistingDockingPointEvaluation>> availableMissions,
         IReadOnlyList<TwistingDockingPointEvaluation>? dockingPoints = null,
-        IEnumerable<FleetStatusDto>? fleetStatuses = null)
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        int stopsPerMission = TwistingParkingRegistry.StopsPerLoadMission)
     {
         var activePrior = flights.FirstOrDefault(f =>
-            f.IsActive && f.TwpGroupId == twpGroupId && f.LaneBlockIndex == priorBlockIndex);
+            f.IsActive && IsFlightOnLane(f, twpGroupId) && f.LaneBlockIndex == priorBlockIndex);
         if (activePrior is not null)
-            return HasFlightEnteredLane(activePrior, fleetStatuses);
+            return HasFlightEnteredSpecificLane(activePrior, twpGroupId, fleetStatuses);
 
-        if (!HasDispatchableMissionAtBlock(priorBlockIndex, availableMissions))
+        if (!HasDispatchableMissionAtBlock(priorBlockIndex, availableMissions, stopsPerMission))
             return true;
 
-        if (IsLaneBlockLoaded(priorBlockIndex, dockingPoints))
+        if (IsLaneBlockCleared(priorBlockIndex, dockingPoints, stopsPerMission))
             return true;
 
         return false;
@@ -199,14 +226,16 @@ public static class TwistingLoadLaneAdmission
     static bool IsSideTailLaneCleared(
         TwistingLoadMachineEvaluation eval,
         IEnumerable<TwistingLoadInFlight> flights,
-        IEnumerable<FleetStatusDto>? fleetStatuses) =>
+        IEnumerable<FleetStatusDto>? fleetStatuses,
+        int stopsPerMission) =>
         IsPriorLaneBlockSatisfied(
             flights,
             eval.TwpGroupId,
             0,
             eval.AvailableMissions,
             eval.DockingPoints,
-            fleetStatuses);
+            fleetStatuses,
+            stopsPerMission);
 
     static string? TryGetPriorLaneBlockReason(
         IEnumerable<TwistingLoadInFlight> flights,
@@ -216,17 +245,19 @@ public static class TwistingLoadLaneAdmission
         IReadOnlyList<TwistingDockingPointEvaluation>? dockingPoints,
         string? machineCode = null,
         string? laneLabel = null,
-        IEnumerable<FleetStatusDto>? fleetStatuses = null)
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        int stopsPerMission = TwistingParkingRegistry.StopsPerLoadMission)
     {
         laneLabel ??= FormatTwpLane(twpGroupId);
         var prefix = machineCode is not null ? $"{machineCode} " : "";
 
         var activePrior = flights.FirstOrDefault(f =>
-            f.IsActive && f.TwpGroupId == twpGroupId && f.LaneBlockIndex == priorBlockIndex);
-        if (activePrior is not null && !HasFlightEnteredLane(activePrior, fleetStatuses))
+            f.IsActive && IsFlightOnLane(f, twpGroupId) && f.LaneBlockIndex == priorBlockIndex);
+        if (activePrior is not null && !HasFlightEnteredSpecificLane(activePrior, twpGroupId, fleetStatuses))
             return FormatWaitingForLaneEntry(activePrior, $"{prefix}{laneLabel}".Trim(), fleetStatuses);
 
-        var waitingMission = availableMissions.FirstOrDefault(m => GetLaneBlockIndex(m) == priorBlockIndex);
+        var waitingMission = availableMissions.FirstOrDefault(m =>
+            GetLaneBlockIndex(m, stopsPerMission) == priorBlockIndex);
         if (waitingMission is not null)
         {
             var label = priorBlockIndex == 0 ? "尾端組" : "前序組";
@@ -248,21 +279,23 @@ public static class TwistingLoadLaneAdmission
 
     static bool HasDispatchableMissionAtBlock(
         int blockIndex,
-        IReadOnlyList<IReadOnlyList<TwistingDockingPointEvaluation>> availableMissions) =>
+        IReadOnlyList<IReadOnlyList<TwistingDockingPointEvaluation>> availableMissions,
+        int stopsPerMission) =>
         availableMissions.Any(m =>
-            GetLaneBlockIndex(m) == blockIndex &&
+            GetLaneBlockIndex(m, stopsPerMission) == blockIndex &&
             m.Any(p => p.IsDispatchable));
 
-    static bool IsLaneBlockLoaded(
+    /// <summary>該區塊停車點皆已不可派（料況已處理），視為前序完成。</summary>
+    static bool IsLaneBlockCleared(
         int blockIndex,
-        IReadOnlyList<TwistingDockingPointEvaluation>? dockingPoints)
+        IReadOnlyList<TwistingDockingPointEvaluation>? dockingPoints,
+        int stopsPerMission)
     {
         if (dockingPoints is null || dockingPoints.Count == 0)
             return false;
 
-        var tailSeq = TwistingParkingRegistry.DockingPointsPerSide
-                      - blockIndex * TwistingParkingRegistry.StopsPerLoadMission;
-        var headSeq = tailSeq - TwistingParkingRegistry.StopsPerLoadMission + 1;
+        var tailSeq = TwistingParkingRegistry.DockingPointsPerSide - blockIndex * stopsPerMission;
+        var headSeq = tailSeq - stopsPerMission + 1;
         var bySeq = dockingPoints.ToDictionary(p => p.Sequence);
 
         for (var seq = headSeq; seq <= tailSeq; seq++)
@@ -273,9 +306,6 @@ public static class TwistingLoadLaneAdmission
 
         return true;
     }
-
-    static string FormatMissionStops(IReadOnlyList<string> parkingPointIds) =>
-        string.Join(" → ", parkingPointIds);
 
     static int ParseSequenceFromParkingPointId(string parkingPointId)
     {

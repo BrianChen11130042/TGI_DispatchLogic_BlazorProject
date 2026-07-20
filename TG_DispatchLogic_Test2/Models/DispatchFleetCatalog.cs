@@ -17,15 +17,25 @@ public static class DispatchFleetCatalog
     public static readonly IReadOnlyList<string> ClearingLoadCakeVehicleCodes =
         TwistingUnloadCakeVehicleCodes;
 
+    public const int BobbinVehicleCountPerFleet = 8;
+
+    /// <summary>撚紗下料派 Bobbin 車：BOBBIN-01 ~ BOBBIN-08。</summary>
+    public static readonly IReadOnlyList<string> TwistingUnloadBobbinVehicleCodes =
+        Enumerable.Range(1, BobbinVehicleCountPerFleet).Select(i => $"BOBBIN-{i:D2}").ToList();
+
+    /// <summary>AOI 上料派 Bobbin 車：與撚紗下料相同區段 BOBBIN-01 ~ BOBBIN-08。</summary>
+    public static readonly IReadOnlyList<string> AoiLoadBobbinVehicleCodes =
+        TwistingUnloadBobbinVehicleCodes;
+
     /// <summary>派車分頁 ↔ 車種 ↔ 車號對照（UI 表格用，可繼續往下加）。</summary>
     public static readonly IReadOnlyList<DispatchFleetAssignment> Assignments =
     [
         new("Buffer 區派Cake車", "Cake", FormatRange(CakeVehicleCodes), CakeVehicleCodes),
         new("撚紗上料派Cake車", "Cake", FormatRange(CakeVehicleCodes), CakeVehicleCodes),
         new("撚紗下料派Cake車", "Cake", FormatRange(TwistingUnloadCakeVehicleCodes), TwistingUnloadCakeVehicleCodes),
-        new("撚紗下料派Bobbin車", "Bobbin", "待規劃", []),
+        new("撚紗下料派Bobbin車", "Bobbin", FormatRange(TwistingUnloadBobbinVehicleCodes), TwistingUnloadBobbinVehicleCodes),
         new("清軸上料派Cake車", "Cake", FormatRange(ClearingLoadCakeVehicleCodes), ClearingLoadCakeVehicleCodes),
-        new("AOI上料派Bobbin車", "Bobbin", "待規劃", []),
+        new("AOI上料派Bobbin車", "Bobbin", FormatRange(AoiLoadBobbinVehicleCodes), AoiLoadBobbinVehicleCodes),
     ];
 
     static string FormatRange(IReadOnlyList<string> codes) =>

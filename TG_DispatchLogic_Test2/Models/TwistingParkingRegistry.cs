@@ -13,6 +13,15 @@ public static class TwistingParkingRegistry
     public const int RequestUnloadStatus = 4;
     public const int MaxConcurrentMissionsPerSide = 7;
 
+    /// <summary>撚紗下料 Bobbin：每趟 6 停車點 × 4 Port = 24（滿車）。</summary>
+    public const int StopsPerBobbinUnloadMission = 6;
+    public const int PortsPerBobbinUnloadMission =
+        PortsPerDockingPoint * StopsPerBobbinUnloadMission;
+    /// <summary>單側 21 點 → 3 組滿車後殘餘 3 點（12 Port），可與對側合成第 7 趟。</summary>
+    public const int BobbinRemainderStops = 3;
+    public const int MaxBobbinFullMissionsPerSide =
+        DockingPointsPerSide / StopsPerBobbinUnloadMission;
+
     static readonly Lazy<ParkingCatalogDto> Catalog = new(Services.SimulateCodeParkingCatalogBuilder.Build);
 
     public static ParkingCatalogDto GetCatalog() => Catalog.Value;

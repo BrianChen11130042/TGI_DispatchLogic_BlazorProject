@@ -101,11 +101,16 @@ public static class BufferFlowDispatchBuilder
         return BuildValueAmrSlots(activeRuns);
     }
 
-    /// <summary>組裝 value_amr：前 N 組為實際動作，run_(N+1)~run_12 填 0。</summary>
-    public static string BuildValueAmrSlots(IReadOnlyList<(int ActionId, int FromPort, int ToPort)> activeRuns)
+    /// <summary>組裝 value_amr：前 N 組為實際動作，其餘 run 填 0（預設 12；Bobbin 可傳 24）。</summary>
+    public static string BuildValueAmrSlots(
+        IReadOnlyList<(int ActionId, int FromPort, int ToPort)> activeRuns,
+        int maxArmRuns = MaxArmRuns)
     {
-        var parts = new List<string>(MaxArmRuns * 4);
-        for (var n = 1; n <= MaxArmRuns; n++)
+        if (maxArmRuns <= 0)
+            maxArmRuns = MaxArmRuns;
+
+        var parts = new List<string>(maxArmRuns * 4);
+        for (var n = 1; n <= maxArmRuns; n++)
         {
             var i = n - 1;
             if (i < activeRuns.Count)

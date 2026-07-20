@@ -22,7 +22,7 @@
                 {
                     <span class="parking-cat-muted small">
                         Cake @DispatchFleetCatalog.Assignments.Count(a => a.VehicleType == "Cake" && a.VehicleCodes.Count > 0) 組已規劃
-                        · Bobbin 待規劃
+                        · Bobbin @DispatchFleetCatalog.Assignments.Count(a => a.VehicleType == "Bobbin" && a.VehicleCodes.Count > 0) 組已規劃
                         · 共 @DispatchFleetCatalog.Assignments.Count 列
                     </span>
                 }
@@ -409,6 +409,8 @@
                                                           DispatchBlockReason="@Session.GetTwpUnloadPairBlockReason(pair)"
                                                           DispatchMode="@Session.TwpUnloadDispatchMode"
                                                           DispatchBusy="@Session.TwpUnloadDispatchBusy"
+                                                          ActionId="1"
+                                                          ActionDirection="撚紗機→車"
                                                           OnDispatch="Session.DispatchTwpUnloadPairManualAsync" />
                         }
                     </div>
@@ -468,10 +470,123 @@
     }
     else if (Session.MainTab == "twisting-unload-bobbin")
     {
-        <div class="dispatch-placeholder-card">
-            <h3>撚紗下料派Bobbin車</h3>
-            <p class="api-test-hint">撚紗機下料（撚紗機 → Bobbin 車）派車邏輯開發中。</p>
+        <div class="dispatch-mode-bar">
+            <span class="equip-panel-hint mb-0">派車模式</span>
+            <button type="button" class="equip-tab-btn small @(Session.TwpUnloadBobbinDispatchMode == "manual" ? "active" : "")"
+                    @onclick="Session.SetTwpUnloadBobbinDispatchModeManual">手動（先預覽 JSON）</button>
+            <button type="button" class="equip-tab-btn small @(Session.TwpUnloadBobbinDispatchMode == "auto" ? "active" : "")"
+                    @onclick="Session.SetTwpUnloadBobbinDispatchModeAuto">自動派車</button>
+            @if (Session.TwpUnloadBobbinDispatchMode == "manual")
+            {
+                <span class="api-test-hint">一組配對依序 POST 6 次 flow（跨側殘餘亦 6 次：A3+B3；每次 4 手臂 · value_amr 1~24）</span>
+            }
+            else
+            {
+                <span class="api-test-hint">請下料 + 6 停車點可下 Bobbin 時自動派車 · 每 @DispatchLogicSessionService.TwpAutoDispatchIntervalSeconds 秒最多派 1 組</span>
+            }
+            <DispatchStatusResetBar InFlightCount="Session.TwpUnloadBobbinActiveInFlightCount"
+                                    LogCount="Session.TwpUnloadBobbinDispatchLogs.Count"
+                                    OnReset="Session.ResetTwpUnloadBobbinDispatchStateAsync" />
         </div>
+
+        <div class="equip-panel-hint">
+            狀態=請下料、尾端6停車點×4 Bobbin Port 皆有絲(2)、空車 BOBBIN-01~08、actionid=1、artifact=bobbin_mission；
+            殘餘 A3+B3 跨側為第 7 趟（兩邊 lane 都綠燈才派）
+        </div>
+
+        @if (Session.Snapshot is null)
+        {
+            <p class="api-test-hint">正在讀取 Modbus 資料…</p>
+        }
+        else if (!Session.Snapshot.Success)
+        {
+            <p class="text-danger">@(Session.Snapshot.Error ?? "Modbus 讀取失敗")</p>
+        }
+        else
+        {
+            <div class="dispatch-summary @(Session.TwpUnloadBobbinAvailableMissionBlockCount > 0 ? "has-ready" : "")">
+                <strong>可派組數：@Session.TwpUnloadBobbinAvailableMissionBlockCount</strong>
+                <span>· 請下料機側：@Session.TwpUnloadBobbinRequestSideCount</span>
+                <span>· 可派 Bobbin 車：@(Session.TwpUnloadBobbinVehicles.Count(v => v.IsEligible && !Session.IsAmrBusy(v.AmrCode)))</span>
+                <span>· 配對：@(Session.TwpUnloadBobbinPairings?.Count ?? 0) 組</span>
+                @if (Session.TwpUnloadBobbinActiveInFlightCount > 0)
+                {
+                    <span>· 任務中：@Session.TwpUnloadBobbinActiveInFlightCount</span>
+                }
+            </div>
+
+            @if (Session.TwpUnloadBobbinPairings is { Count: > 0 })
+            {
+                <section class="dispatch-section">
+                    <h3 class="dispatch-section-title">配對與派車（amr_mission · actionid=1 · bobbin_mission）</h3>
+                    <div class="dispatch-pair-grid">
+                        @foreach (var pair in Session.TwpUnloadBobbinPairings)
+                        {
+                            <DispatchTwistingLoadPairCard Pair="pair"
+                                                          CanDispatch="@Session.GetTwpUnloadBobbinPairCanDispatch(pair)"
+                                                          DispatchBlockReason="@Session.GetTwpUnloadBobbinPairBlockReason(pair)"
+                                                          DispatchMode="@Session.TwpUnloadBobbinDispatchMode"
+                                                          DispatchBusy="@Session.TwpUnloadBobbinDispatchBusy"
+                                                          ActionId="1"
+                                                          ActionDirection="撚紗機→Bobbin車"
+                                                          OnDispatch="Session.DispatchTwpUnloadBobbinPairManualAsync" />
+                        }
+                    </div>
+                </section>
+            }
+            else if (Session.TwpUnloadBobbinRequestSideCount > 0 && Session.TwpUnloadBobbinActiveInFlightCount == 0)
+            {
+                <p class="api-test-hint">有撚紗機可派車，但目前沒有可用的空閒 Bobbin 車可配對。</p>
+            }
+            else if (Session.TwpUnloadBobbinRequestSideCount == 0 && Session.TwpUnloadBobbinActiveInFlightCount == 0)
+            {
+                <p class="api-test-hint">目前無請下料且湊滿 6 停車點（或跨側殘餘）的撚紗機，或無可配對車輛。</p>
+            }
+
+            <DispatchTwistingLoadInFlightPanel Tasks="Session.TwpUnloadBobbinActiveInFlightTasks" />
+            <DispatchBufferLogPanel Logs="Session.TwpUnloadBobbinDispatchLogs" />
+        }
+
+        <section class="dispatch-section dispatch-detail-section">
+            <h3 class="dispatch-section-title">
+                Bobbin 車 Port 明細（下料用 · BOBBIN-01 ~ BOBBIN-08）
+                <span class="parking-cat-muted small">需 24 Port 全空</span>
+            </h3>
+            @if (Session.AmrError is not null)
+            {
+                <p class="text-danger small dispatch-tgi-hint">@Session.AmrError</p>
+            }
+            else if (Session.LastAmrRefresh is not null)
+            {
+                <p class="api-test-hint small dispatch-tgi-hint">
+                    TGI 最後更新 @Session.LastAmrRefresh.Value.ToString("HH:mm:ss")
+                </p>
+            }
+            <div class="dispatch-buffer-grid">
+                @foreach (var v in Session.TwpUnloadBobbinVehicles)
+                {
+                    <DispatchCakeVehicleView Vehicle="v" />
+                }
+            </div>
+        </section>
+
+        @if (Session.Snapshot?.Success == true && Session.TwpUnloadBobbinMachineEvaluations is { Count: > 0 })
+        {
+            <section class="dispatch-section dispatch-detail-section">
+                <h3 class="dispatch-section-title">撚紗機 Bobbin 作業明細</h3>
+                <div class="dispatch-buffer-grid">
+                    @foreach (var eval in Session.TwpUnloadBobbinMachineEvaluations)
+                    {
+                        var inFlights = Session.TwpUnloadBobbinInFlightDispatches
+                            .Where(f => f.IsActive &&
+                                        (f.MissionKey.Equals(eval.MissionKey, StringComparison.OrdinalIgnoreCase) ||
+                                         (f.IsCrossSide && f.MachineId == eval.MachineId)))
+                            .ToList();
+                        <DispatchTwistingLoadMachineView Evaluation="eval" InFlights="inFlights" ForBobbinUnload="true" />
+                    }
+                </div>
+            </section>
+        }
     }
     else if (Session.MainTab == "clearing-load")
     {
@@ -580,10 +695,104 @@
     }
     else if (Session.MainTab == "aoi-load")
     {
-        <div class="dispatch-placeholder-card">
-            <h3>AOI上料派Bobbin車</h3>
-            <p class="api-test-hint">AOI 上料（Bobbin 車 → AOI 包裝站）派車邏輯開發中。</p>
+        <div class="dispatch-mode-bar">
+            <span class="equip-panel-hint mb-0">派車模式</span>
+            <button type="button" class="equip-tab-btn small @(Session.AoiDispatchMode == "manual" ? "active" : "")"
+                    @onclick="Session.SetAoiDispatchModeManual">手動（先預覽 JSON）</button>
+            <button type="button" class="equip-tab-btn small @(Session.AoiDispatchMode == "auto" ? "active" : "")"
+                    @onclick="Session.SetAoiDispatchModeAuto">自動派車</button>
+            @if (Session.AoiDispatchMode == "manual")
+            {
+                <span class="api-test-hint">檢查 JSON 後按各組「派車」（單次 POST · 24 Port）</span>
+            }
+            else
+            {
+                <span class="api-test-hint">符合配對條件時自動派車 · 每 @DispatchLogicSessionService.TwpAutoDispatchIntervalSeconds 秒最多派 1 組</span>
+            }
+            <DispatchStatusResetBar InFlightCount="Session.AoiActiveInFlightCount"
+                                    LogCount="Session.AoiDispatchLogs.Count"
+                                    OnReset="Session.ResetAoiDispatchStateAsync" />
         </div>
+
+        <div class="equip-panel-hint">
+            AOI：PKP001~002 停車點空 + 未鎖 · 忽略 Modbus · 兩站可同時派 · Bobbin 車 BOBBIN-01~08：idle、無任務、24 Port 皆有絲(2) · actionid=2 · bobbin_mission · 派車後鎖定至任務完成
+        </div>
+
+        <div class="dispatch-summary @(Session.AoiAvailableStationCount > 0 ? "has-ready" : "")">
+            <strong>AOI 可派：@Session.AoiAvailableStationCount</strong>
+            <span>· 可派 Bobbin 車：@(Session.AoiBobbinVehicles.Count(v => v.IsEligible && !Session.IsAmrBusy(v.AmrCode)))</span>
+            <span>· 配對：@(Session.AoiPairings?.Count ?? 0) 組</span>
+            @if (Session.AoiActiveInFlightCount > 0)
+            {
+                <span>· 任務中：@Session.AoiActiveInFlightCount</span>
+            }
+        </div>
+
+        @if (Session.AoiPairings is { Count: > 0 })
+        {
+            <section class="dispatch-section">
+                <h3 class="dispatch-section-title">配對與派車（amr_mission · actionid=2 · bobbin_mission）</h3>
+                <div class="dispatch-pair-grid">
+                    @foreach (var pair in Session.AoiPairings)
+                    {
+                        <DispatchAoiLoadPairCard Pair="pair"
+                                                 DispatchMode="@Session.AoiDispatchMode"
+                                                 DispatchBusy="@Session.AoiDispatchBusy"
+                                                 OnDispatch="Session.DispatchAoiPairManualAsync" />
+                    }
+                </div>
+            </section>
+        }
+        else if (Session.AoiDispatchableStationCount > 0 && Session.AoiActiveInFlightCount == 0)
+        {
+            <p class="api-test-hint">有 AOI 站可派車，但目前沒有可用的滿載 Bobbin 車可配對。</p>
+        }
+        else if (Session.AoiDispatchableStationCount == 0 && Session.AoiActiveInFlightCount == 0)
+        {
+            <p class="api-test-hint">目前無符合條件的 AOI 站或配對。</p>
+        }
+
+        <DispatchAoiLoadInFlightPanel Tasks="Session.AoiActiveInFlightTasks" />
+        <DispatchBufferLogPanel Logs="Session.AoiDispatchLogs" />
+
+        <section class="dispatch-section dispatch-detail-section">
+            <h3 class="dispatch-section-title">
+                Bobbin 車 Port 明細（BOBBIN-01 ~ BOBBIN-08）
+                <span class="parking-cat-muted small">需 24 Port 皆為有絲(2) · GET /v2/robots/status</span>
+            </h3>
+            @if (Session.AmrError is not null)
+            {
+                <p class="text-danger small dispatch-tgi-hint">@Session.AmrError</p>
+            }
+            else if (Session.LastAmrRefresh is not null)
+            {
+                <p class="api-test-hint small dispatch-tgi-hint">
+                    TGI 最後更新 @Session.LastAmrRefresh.Value.ToString("HH:mm:ss") · API 回報 @Session.TgiRobotReportCount 台
+                </p>
+            }
+            <div class="dispatch-buffer-grid">
+                @foreach (var v in Session.AoiBobbinVehicles)
+                {
+                    <DispatchCakeVehicleView Vehicle="v" />
+                }
+            </div>
+        </section>
+
+        @if (Session.AoiStationEvaluations is { Count: > 0 })
+        {
+            <section class="dispatch-section dispatch-detail-section">
+                <h3 class="dispatch-section-title">AOI 包裝站明細（PKP001 / PKP002）</h3>
+                <div class="dispatch-buffer-grid">
+                    @foreach (var eval in Session.AoiStationEvaluations)
+                    {
+                        var inFlight = Session.AoiInFlightDispatches.FirstOrDefault(f =>
+                            f.IsActive &&
+                            f.ParkingPointId.Equals(eval.ParkingPointId, StringComparison.OrdinalIgnoreCase));
+                        <DispatchAoiLoadStationView Evaluation="eval" InFlight="inFlight" />
+                    }
+                </div>
+            </section>
+        }
     }
 </div>
 

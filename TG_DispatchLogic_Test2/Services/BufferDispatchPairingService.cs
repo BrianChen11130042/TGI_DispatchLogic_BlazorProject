@@ -5,6 +5,7 @@ namespace TG_DispatchLogic_Test2.Services;
 public static class CakeVehicleDispatchEvaluator
 {
     public const int DefaultCakeCapacity = 12;
+    public const int DefaultBobbinCapacity = TwistingParkingRegistry.PortsPerBobbinUnloadMission;
 
     public static string FormatPortLabel(ushort value) => value switch
     {
@@ -34,11 +35,12 @@ public static class CakeVehicleDispatchEvaluator
 
     public static IReadOnlyList<CakeVehicleDispatchStatus> BuildWaitingFleet(
         string reason = "等待 TGI /v2/robots/status…",
-        IReadOnlyList<string>? vehicleCodes = null) =>
+        IReadOnlyList<string>? vehicleCodes = null,
+        int capacity = DefaultCakeCapacity) =>
         (vehicleCodes ?? DispatchFleetCatalog.CakeVehicleCodes)
             .Select(code => new CakeVehicleDispatchStatus(
-                code, "—", "—", 0, DefaultCakeCapacity, null, false, false, false,
-                reason, BuildEmptyPorts()))
+                code, "—", "—", 0, capacity, null, false, false, false,
+                reason, BuildEmptyPorts(capacity)))
             .ToList();
 
     public static bool IsParkedAtWaitingArea(
@@ -295,6 +297,176 @@ public static class CakeVehicleDispatchEvaluator
 
         return DispatchFleetCatalog.TwistingUnloadCakeVehicleCodes
             .Select(code => EvaluateForTwistingUnload(
+                ResolveRobot(robotMap, code),
+                ResolveSimulation(simMap, code),
+                ResolveFleet(fleetMap, code),
+                code,
+                busy,
+                ResolveActiveTask(taskList, code)))
+            .ToList();
+    }
+
+    /// <summary>撚紗下料用 Bobbin 車：需 idle、24 Port 全空。</summary>
+    public static CakeVehicleDispatchStatus EvaluateForTwistingUnloadBobbin(
+        RobotStatusDto? robot,
+        SimulationAmrDto? simulation,
+        FleetStatusDto? fleet,
+        string amrCode,
+        IReadOnlySet<string> busyAmrCodes,
+        ActiveSimulationTaskDto? activeTask = null)
+    {
+        var siteCode = ResolveVehicleSiteCode(fleet, simulation, robot?.State, activeTask);
+        var defaultCap = DefaultBobbinCapacity;
+
+        if (robot is null)
+        {
+            return new CakeVehicleDispatchStatus(
+                amrCode, "—", "—", 0, defaultCap, siteCode, false, false, false,
+                "TGI /v2/robots/status 未回報此車",
+                BuildPortStatuses(null, defaultCap));
+        }
+
+        var capacity = robot.CarryingCapacity > 0 ? robot.CarryingCapacity : defaultCap;
+        var ports = BuildPortStatuses(robot.PortStates, capacity);
+        var carryingCount = Math.Max(robot.CarryingCount, ports.Count(p => p.RawValue != 0));
+        var dispatchEnabled = simulation?.DispatchEnabled ?? true;
+        var status = robot.State;
+
+        if (!string.Equals(robot.ConnectionStatus, "connected", StringComparison.OrdinalIgnoreCase))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "連線狀態非 connected");
+
+        if (!string.Equals(status, "idle", StringComparison.OrdinalIgnoreCase))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, $"狀態={status}（需 idle）");
+
+        if (ports.Any(p => p.RawValue != 0))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, $"車上 {carryingCount}/{capacity} Port 有料（需 {defaultCap} Port 全空）");
+
+        if (IsAmrInBusySet(busyAmrCodes, robot.RobotId) || IsAmrInBusySet(busyAmrCodes, amrCode))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "有進行中任務");
+
+        if (!dispatchEnabled)
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "DispatchEnabled=false");
+
+        return new CakeVehicleDispatchStatus(
+            robot.RobotId,
+            status,
+            robot.ConnectionStatus,
+            carryingCount,
+            capacity,
+            siteCode,
+            IsParkedAtWaitingArea(fleet, [], siteCode),
+            dispatchEnabled,
+            true,
+            $"可下料（{capacity} Port 全空）",
+            ports);
+    }
+
+    public static IReadOnlyList<CakeVehicleDispatchStatus> EvaluateFleetForTwistingUnloadBobbin(
+        IEnumerable<RobotStatusDto> robots,
+        IEnumerable<SimulationAmrDto>? simulationAmrs,
+        IEnumerable<ActiveSimulationTaskDto> activeTasks,
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        IEnumerable<string>? inFlightAmrCodes = null)
+    {
+        var robotMap = BuildRobotMap(robots);
+        var simMap = BuildSimulationMap(simulationAmrs);
+        var fleetMap = BuildFleetMap(fleetStatuses);
+        var busy = BuildBusyAmrSet(activeTasks, inFlightAmrCodes);
+        var taskList = activeTasks.ToList();
+
+        return DispatchFleetCatalog.TwistingUnloadBobbinVehicleCodes
+            .Select(code => EvaluateForTwistingUnloadBobbin(
+                ResolveRobot(robotMap, code),
+                ResolveSimulation(simMap, code),
+                ResolveFleet(fleetMap, code),
+                code,
+                busy,
+                ResolveActiveTask(taskList, code)))
+            .ToList();
+    }
+
+    /// <summary>AOI 上料用 Bobbin 車：需 idle、24 Port 皆為有絲(2)。</summary>
+    public static CakeVehicleDispatchStatus EvaluateForAoiLoad(
+        RobotStatusDto? robot,
+        SimulationAmrDto? simulation,
+        FleetStatusDto? fleet,
+        string amrCode,
+        IReadOnlySet<string> busyAmrCodes,
+        ActiveSimulationTaskDto? activeTask = null)
+    {
+        var siteCode = ResolveVehicleSiteCode(fleet, simulation, robot?.State, activeTask);
+        var defaultCap = DefaultBobbinCapacity;
+        var required = DefaultBobbinCapacity;
+
+        if (robot is null)
+        {
+            return new CakeVehicleDispatchStatus(
+                amrCode, "—", "—", 0, defaultCap, siteCode, false, false, false,
+                "TGI /v2/robots/status 未回報此車",
+                BuildPortStatuses(null, defaultCap));
+        }
+
+        var capacity = robot.CarryingCapacity > 0 ? robot.CarryingCapacity : defaultCap;
+        var ports = BuildPortStatuses(robot.PortStates, capacity);
+        var fullSilkCount = ports.Count(p => p.RawValue == 2);
+        var carryingCount = Math.Max(robot.CarryingCount, ports.Count(p => p.RawValue != 0));
+        var dispatchEnabled = simulation?.DispatchEnabled ?? true;
+        var status = robot.State;
+
+        if (!string.Equals(robot.ConnectionStatus, "connected", StringComparison.OrdinalIgnoreCase))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "連線狀態非 connected");
+
+        if (!string.Equals(status, "idle", StringComparison.OrdinalIgnoreCase))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, $"狀態={status}（需 idle）");
+
+        if (fullSilkCount < required || ports.Count < required || ports.Take(required).Any(p => p.RawValue != 2))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, $"車上僅 {fullSilkCount}/{required} Port 有絲 Bobbin（需滿載上料）");
+
+        if (IsAmrInBusySet(busyAmrCodes, robot.RobotId) || IsAmrInBusySet(busyAmrCodes, amrCode))
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "有進行中任務");
+
+        if (!dispatchEnabled)
+            return Ineligible(robot, simulation, fleet, ports, carryingCount, dispatchEnabled, siteCode,
+                false, "DispatchEnabled=false");
+
+        return new CakeVehicleDispatchStatus(
+            robot.RobotId,
+            status,
+            robot.ConnectionStatus,
+            carryingCount,
+            capacity,
+            siteCode,
+            IsParkedAtWaitingArea(fleet, [], siteCode),
+            dispatchEnabled,
+            true,
+            $"可上料（{fullSilkCount} Port 有絲 Bobbin）",
+            ports);
+    }
+
+    public static IReadOnlyList<CakeVehicleDispatchStatus> EvaluateFleetForAoiLoad(
+        IEnumerable<RobotStatusDto> robots,
+        IEnumerable<SimulationAmrDto>? simulationAmrs,
+        IEnumerable<ActiveSimulationTaskDto> activeTasks,
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        IEnumerable<string>? inFlightAmrCodes = null)
+    {
+        var robotMap = BuildRobotMap(robots);
+        var simMap = BuildSimulationMap(simulationAmrs);
+        var fleetMap = BuildFleetMap(fleetStatuses);
+        var busy = BuildBusyAmrSet(activeTasks, inFlightAmrCodes);
+        var taskList = activeTasks.ToList();
+
+        return DispatchFleetCatalog.AoiLoadBobbinVehicleCodes
+            .Select(code => EvaluateForAoiLoad(
                 ResolveRobot(robotMap, code),
                 ResolveSimulation(simMap, code),
                 ResolveFleet(fleetMap, code),
@@ -591,6 +763,10 @@ public static class CakeVehicleDispatchEvaluator
             {
                 yield return $"{parts[0]}-{parts[1].TrimStart('0')}";
                 yield return parts[0] + parts[1];
+                if (parts[0] == "CAKE")
+                    yield return $"Cake-{parts[1]}";
+                if (parts[0] == "BOBBIN")
+                    yield return $"Bobbin-{parts[1]}";
             }
         }
     }

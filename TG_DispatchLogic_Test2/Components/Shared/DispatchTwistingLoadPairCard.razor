@@ -10,9 +10,18 @@
 
     <div class="dispatch-pair-head">
 
-        <span class="equip-badge equip-badge-info">@Pair.Machine.MachineCode @Pair.Machine.Side</span>
+        <span class="equip-badge equip-badge-info">@Pair.Machine.MachineCode @(Pair.IsCrossSide ? "AB" : Pair.Machine.Side.ToString())</span>
 
-        <span class="equip-badge equip-badge-info">@TwistingLoadLaneAdmission.FormatTwpLane(Pair.Machine.TwpGroupId)</span>
+        <span class="equip-badge equip-badge-info">
+            @if (Pair.IsCrossSide && Pair.SecondaryTwpGroupId is int secTwp)
+            {
+                @($"{TwistingLoadLaneAdmission.FormatTwpLane(Pair.Machine.TwpGroupId)}+{TwistingLoadLaneAdmission.FormatTwpLane(secTwp)}")
+            }
+            else
+            {
+                @TwistingLoadLaneAdmission.FormatTwpLane(Pair.Machine.TwpGroupId)
+            }
+        </span>
 
         <span class="dispatch-pair-meta parking-cat-muted small">
 
@@ -26,7 +35,15 @@
 
         <span class="dispatch-pair-meta parking-cat-muted small">
 
-            3 停車點 × 4 Port · 依序 POST @Pair.Stops.Count 次
+            @Pair.Stops.Count 停車點 × 4 Port · 依序 POST @Pair.Stops.Count 次
+
+            @if (Pair.IsCrossSide)
+
+            {
+
+                <text> · 跨側 A→B</text>
+
+            }
 
         </span>
 
@@ -88,7 +105,7 @@
 
             <div class="dispatch-pair-meta parking-cat-muted small mb-1">
 
-                actionid=3（車→撚紗機）×@TwistingParkingRegistry.PortsPerDockingPoint
+                actionid=@ActionId（@ActionDirection）×@TwistingParkingRegistry.PortsPerDockingPoint
 
             </div>
 
@@ -115,6 +132,11 @@
     [Parameter] public bool DispatchBusy { get; set; }
 
     [Parameter] public EventCallback<TwistingLoadDispatchPair> OnDispatch { get; set; }
+
+    /// <summary>顯示用：上料=3、下料 Cake/Bobbin=1。</summary>
+    [Parameter] public int ActionId { get; set; } = 3;
+
+    [Parameter] public string ActionDirection { get; set; } = "車→撚紗機";
 
 
 
