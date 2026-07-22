@@ -3,7 +3,7 @@ using TG_DispatchLogic_Test2.Models;
 namespace TG_DispatchLogic_Test2.Services;
 
 /// <summary>
-/// AOI 包裝站可派：停車點空 + 未鎖（忽略 Modbus）。
+/// AOI 包裝站可派：未鎖即可（忽略停車點是否有人停靠、忽略 Modbus）。
 /// PKP001 / PKP002 可同時派，無單行道互斥。
 /// </summary>
 public static class AoiLoadDispatchEvaluator
@@ -39,18 +39,14 @@ public static class AoiLoadDispatchEvaluator
                 $"任務中鎖定（{meta.ParkingPointId}）", occupying);
         }
 
-        if (!isEmpty)
-        {
-            return new AoiLoadDispatchEvaluation(
-                meta.StationId, meta.StationCode, meta.ParkingPointId,
-                false, false, false,
-                $"停車點已有 {occupying} 停靠", occupying);
-        }
+        var reason = isEmpty
+            ? "未鎖，可派車"
+            : $"未鎖，可派車（目前有 {occupying} 停靠，不擋派）";
 
         return new AoiLoadDispatchEvaluation(
             meta.StationId, meta.StationCode, meta.ParkingPointId,
-            true, false, true,
-            "停車點空，可派車", null);
+            isEmpty, false, true,
+            reason, occupying);
     }
 
     public static bool IsParkingPointOccupied(

@@ -134,6 +134,8 @@ public sealed class DispatchLogicSessionService : IDisposable
     DateTime? _lastTwpUnloadBobbinAutoFlowAt;
     DateTime? _lastClrAutoFlowAt;
     DateTime? _lastAoiAutoFlowAt;
+    readonly Dictionary<string, DateTime> _aoiEligibleSinceByAmr =
+        new(StringComparer.OrdinalIgnoreCase);
     string? _token;
 
     public int DispatchableBufferCount => BufferEvaluations?.Count(e => e.IsDispatchable) ?? 0;
@@ -698,16 +700,6 @@ public sealed class DispatchLogicSessionService : IDisposable
             AoiDispatchLogs.Insert(0, new BufferDispatchLogEntry(
                 DateTime.Now, pair.Station.ParkingPointId, pair.Vehicle.AmrCode, false,
                 $"暫不可派車：{pair.Station.ParkingPointId} 任務中鎖定", null, null));
-            NotifyChanged();
-            return;
-        }
-
-        if (AoiLoadDispatchEvaluator.IsParkingPointOccupied(
-                LastFleetStatuses, pair.Station.ParkingPointId, out var parkedRobot))
-        {
-            AoiDispatchLogs.Insert(0, new BufferDispatchLogEntry(
-                DateTime.Now, pair.Station.ParkingPointId, pair.Vehicle.AmrCode, false,
-                $"暫不可派車：{pair.Station.ParkingPointId} 已有 {parkedRobot} 停靠", null, null));
             NotifyChanged();
             return;
         }
@@ -1316,8 +1308,10 @@ public sealed class DispatchLogicSessionService : IDisposable
                 robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
             ClrCakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForClearingLoad(
                 robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
-            AoiBobbinVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForAoiLoad(
-                robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
+            AoiBobbinVehicles = AoiLoadEligibleSinceTracker.Apply(
+                CakeVehicleDispatchEvaluator.EvaluateFleetForAoiLoad(
+                    robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes),
+                _aoiEligibleSinceByAmr);
 
             AmrError = null;
             LastAmrRefresh = DateTime.Now;
@@ -1787,9 +1781,7 @@ public sealed class DispatchLogicSessionService : IDisposable
         {
             var pair = AoiPairings.FirstOrDefault(p =>
                 !IsAmrBusy(p.Vehicle.AmrCode)
-                && !AoiLoadDispatchTracker.IsStationLocked(AoiInFlightDispatches, p.Station.ParkingPointId)
-                && !AoiLoadDispatchEvaluator.IsParkingPointOccupied(
-                    LastFleetStatuses, p.Station.ParkingPointId, out _));
+                && !AoiLoadDispatchTracker.IsStationLocked(AoiInFlightDispatches, p.Station.ParkingPointId));
             if (pair is null) return;
 
             var result = await _amrApi.TriggerFlowDiagnosticAsync(

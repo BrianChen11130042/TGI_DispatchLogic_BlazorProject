@@ -23,7 +23,7 @@
     {
         <div class="parking-cat-card-body dispatch-ref-body">
             <div class="parking-cat-muted small mono dispatch-ref-meta">
-                PKP001 / PKP002 可同時派 · 忽略 Modbus · 僅看停車點空 + 未鎖
+                PKP001 / PKP002 可同時派 · 忽略 Modbus · 僅看未鎖（停車點有人不擋派）
             </div>
             <div class="parking-cat-muted small">
                 空位：@(Evaluation.IsEmpty ? "是" : $"否（{Evaluation.OccupyingAmrCode}）") ·

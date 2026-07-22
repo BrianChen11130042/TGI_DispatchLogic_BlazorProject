@@ -24,6 +24,10 @@
                 載料 <strong>@Vehicle.CarryingCount/@Vehicle.CarryingCapacity</strong> Port ·
                 位置 <strong>@(Vehicle.SiteCode ?? "—")</strong> ·
                 @Vehicle.Reason
+                @if (Vehicle.IsEligible && Vehicle.EligibleSince is { } since)
+                {
+                    <text> · 可派自 <strong>@since.ToString("HH:mm:ss")</strong></text>
+                }
             </div>
         </div>
         <span class="dispatch-ref-chevron">@(_expanded ? "▲ 收合" : "▼ 展開 Port 明細")</span>

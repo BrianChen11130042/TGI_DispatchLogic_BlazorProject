@@ -2,7 +2,10 @@ using TG_DispatchLogic_Test2.Models;
 
 namespace TG_DispatchLogic_Test2.Services;
 
-/// <summary>AOI 站依 PKP001→PKP002 優先序，與可派滿載 Bobbin 車 1:1 配對。</summary>
+/// <summary>
+/// AOI 站依 PKP001→PKP002 優先序，與可派滿載 Bobbin 車 1:1 配對。
+/// 車輛優先序：率先達成可派條件者優先（EligibleSince），同時間再比車號。
+/// </summary>
 public static class AoiLoadPairingService
 {
     public static IReadOnlyList<AoiLoadDispatchPair> Pair(
@@ -17,7 +20,8 @@ public static class AoiLoadPairingService
         var readyVehicles = vehicles
             .Where(v => v.IsEligible)
             .Where(v => busyAmrCodes is null || !CakeVehicleDispatchEvaluator.IsAmrInBusySet(busyAmrCodes, v.AmrCode))
-            .OrderBy(v => v.AmrCode, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(v => v.EligibleSince ?? DateTime.MaxValue)
+            .ThenBy(v => v.AmrCode, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var count = Math.Min(readyStations.Count, readyVehicles.Count);

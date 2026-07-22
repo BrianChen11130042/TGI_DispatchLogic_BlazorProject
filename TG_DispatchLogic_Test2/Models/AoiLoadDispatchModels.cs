@@ -1,6 +1,6 @@
 namespace TG_DispatchLogic_Test2.Models;
 
-/// <summary>AOI 包裝站可派評估：停車點空、未被 in-flight 鎖定（忽略 Modbus；兩站可同時派）。</summary>
+/// <summary>AOI 包裝站可派評估：未被 in-flight 鎖定即可（不擋停車點有人；忽略 Modbus；兩站可同時派）。</summary>
 public record AoiLoadDispatchEvaluation(
     int StationId,
     string StationCode,
