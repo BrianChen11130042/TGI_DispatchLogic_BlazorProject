@@ -125,6 +125,24 @@ public class AmrApiClient(HttpClient http, IOptions<AmrApiOptions> options)
             static count => $"取得 {count} 個 Wait Point 等待點",
             cancellationToken);
 
+    /// <summary>GET /v2/wms — 篩選 cell_type=Charge 的充電站</summary>
+    public Task<ApiCallResult<List<WmsCellDto>>> GetChargeStationStatusAsync(
+        string accessToken,
+        CancellationToken cancellationToken = default) =>
+        GetWmsCellsFilteredAsync(
+            accessToken,
+            static c => string.Equals(c.CellType, "Charge", StringComparison.OrdinalIgnoreCase)
+                || c.CellId.StartsWith("CHG", StringComparison.OrdinalIgnoreCase)
+                || (c.CellId.Length >= 2
+                    && (c.CellId[0] is 'C' or 'c')
+                    && char.IsDigit(c.CellId[1])),
+            "6. 篩選 Charge",
+            static count => count > 0
+                ? $"充電站 {count} 筆（cell_type=Charge 或 CHG/C##）"
+                : "無充電站站點",
+            static count => $"取得 {count} 個充電站",
+            cancellationToken);
+
     Task<ApiCallResult<List<WmsCellDto>>> GetWmsCellsFilteredAsync(
         string accessToken,
         Func<WmsCellDto, bool> predicate,

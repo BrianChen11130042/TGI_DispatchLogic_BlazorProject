@@ -27,6 +27,12 @@ public static class DispatchFleetCatalog
     public static readonly IReadOnlyList<string> AoiLoadBobbinVehicleCodes =
         TwistingUnloadBobbinVehicleCodes;
 
+    /// <summary>充電派車：CAKE-01 ~ CAKE-24 與 BOBBIN-01 ~ BOBBIN-08。</summary>
+    public static readonly IReadOnlyList<string> ChargeVehicleCodes =
+        Enumerable.Range(1, 24).Select(i => $"CAKE-{i:D2}")
+            .Concat(TwistingUnloadBobbinVehicleCodes)
+            .ToList();
+
     /// <summary>派車分頁 ↔ 車種 ↔ 車號對照（UI 表格用，可繼續往下加）。</summary>
     public static readonly IReadOnlyList<DispatchFleetAssignment> Assignments =
     [
@@ -36,6 +42,7 @@ public static class DispatchFleetCatalog
         new("撚紗下料派Bobbin車", "Bobbin", FormatRange(TwistingUnloadBobbinVehicleCodes), TwistingUnloadBobbinVehicleCodes),
         new("清軸上料派Cake車", "Cake", FormatRange(ClearingLoadCakeVehicleCodes), ClearingLoadCakeVehicleCodes),
         new("AOI上料派Bobbin車", "Bobbin", FormatRange(AoiLoadBobbinVehicleCodes), AoiLoadBobbinVehicleCodes),
+        new("充電派車", "Cake/Bobbin", FormatRange(ChargeVehicleCodes), ChargeVehicleCodes),
     ];
 
     static string FormatRange(IReadOnlyList<string> codes) =>

@@ -3,6 +3,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 避免專案內巢狀 _build_verify* 輸出被當成 Content 複製失敗 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);_build_verify*/**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="DevExpress.Blazor" Version="24.2.3" />

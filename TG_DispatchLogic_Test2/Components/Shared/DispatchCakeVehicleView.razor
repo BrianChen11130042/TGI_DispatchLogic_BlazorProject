@@ -22,6 +22,10 @@
             </div>
             <div class="parking-cat-muted small dispatch-ref-toggle-summary">
                 載料 <strong>@Vehicle.CarryingCount/@Vehicle.CarryingCapacity</strong> Port ·
+                @if (ShowBattery)
+                {
+                    <text>電量 <strong>@Vehicle.BatteryPercent%</strong> ·</text>
+                }
                 位置 <strong>@(Vehicle.SiteCode ?? "—")</strong> ·
                 @Vehicle.Reason
                 @if (Vehicle.IsEligible && Vehicle.EligibleSince is { } since)
@@ -73,6 +77,7 @@
 
 @code {
     [Parameter, EditorRequired] public CakeVehicleDispatchStatus Vehicle { get; set; } = default!;
+    [Parameter] public bool ShowBattery { get; set; }
 
     bool _expanded;
 

@@ -560,6 +560,127 @@ public static class CakeVehicleDispatchEvaluator
             .ToList();
     }
 
+    /// <summary>充電派車：需 idle、空車（Port 皆 0）、電量低於門檻。</summary>
+    public static CakeVehicleDispatchStatus EvaluateForCharge(
+        RobotStatusDto? robot,
+        SimulationAmrDto? simulation,
+        FleetStatusDto? fleet,
+        string amrCode,
+        IReadOnlySet<string> busyAmrCodes,
+        int batteryThresholdPercent,
+        ActiveSimulationTaskDto? activeTask = null)
+    {
+        var siteCode = ResolveVehicleSiteCode(fleet, simulation, robot?.State, activeTask);
+        var defaultCap = DefaultCapacityFor(amrCode);
+
+        if (robot is null)
+        {
+            return new CakeVehicleDispatchStatus(
+                amrCode, "—", "—", 0, defaultCap, siteCode, false, false, false,
+                "TGI /v2/robots/status 未回報此車",
+                BuildPortStatuses(null, defaultCap));
+        }
+
+        var capacity = robot.CarryingCapacity > 0 ? robot.CarryingCapacity : defaultCap;
+        var ports = BuildPortStatuses(robot.PortStates, capacity);
+        var carryingCount = Math.Max(robot.CarryingCount, ports.Count(p => p.RawValue != 0));
+        var dispatchEnabled = simulation?.DispatchEnabled ?? true;
+        var status = robot.State;
+        var battery = robot.Battery;
+        var threshold = Math.Clamp(batteryThresholdPercent, 1, 100);
+
+        if (!string.Equals(robot.ConnectionStatus, "connected", StringComparison.OrdinalIgnoreCase))
+            return ChargeIneligible(robot, ports, carryingCount, dispatchEnabled, siteCode, battery,
+                "連線狀態非 connected");
+
+        if (!string.Equals(status, "idle", StringComparison.OrdinalIgnoreCase))
+            return ChargeIneligible(robot, ports, carryingCount, dispatchEnabled, siteCode, battery,
+                $"狀態={status}（需 idle）");
+
+        if (ports.Count < capacity || ports.Take(capacity).Any(p => p.RawValue != 0) || carryingCount > 0)
+            return ChargeIneligible(robot, ports, carryingCount, dispatchEnabled, siteCode, battery,
+                $"非空車（載料 {carryingCount}/{capacity}，需 Port 皆空）");
+
+        if (IsAmrInBusySet(busyAmrCodes, robot.RobotId) || IsAmrInBusySet(busyAmrCodes, amrCode))
+            return ChargeIneligible(robot, ports, carryingCount, dispatchEnabled, siteCode, battery,
+                "有進行中任務（作業或充電 in-flight 未結束，完成後才可派充電）");
+
+        if (!dispatchEnabled)
+            return ChargeIneligible(robot, ports, carryingCount, dispatchEnabled, siteCode, battery,
+                "DispatchEnabled=false");
+
+        if (battery >= threshold)
+            return ChargeIneligible(robot, ports, carryingCount, dispatchEnabled, siteCode, battery,
+                $"電量 {battery}% ≥ 門檻 {threshold}%（無需充電）");
+
+        return new CakeVehicleDispatchStatus(
+            robot.RobotId,
+            status,
+            robot.ConnectionStatus,
+            carryingCount,
+            capacity,
+            siteCode,
+            IsParkedAtWaitingArea(fleet, [], siteCode),
+            dispatchEnabled,
+            true,
+            $"可充電（電量 {battery}% ＜ 門檻 {threshold}% · 空車）",
+            ports,
+            BatteryPercent: battery);
+    }
+
+    public static IReadOnlyList<CakeVehicleDispatchStatus> EvaluateFleetForCharge(
+        IEnumerable<RobotStatusDto> robots,
+        IEnumerable<SimulationAmrDto>? simulationAmrs,
+        IEnumerable<ActiveSimulationTaskDto> activeTasks,
+        int batteryThresholdPercent,
+        IEnumerable<FleetStatusDto>? fleetStatuses = null,
+        IEnumerable<string>? inFlightAmrCodes = null)
+    {
+        var robotMap = BuildRobotMap(robots);
+        var simMap = BuildSimulationMap(simulationAmrs);
+        var fleetMap = BuildFleetMap(fleetStatuses);
+        var busy = BuildBusyAmrSet(activeTasks, inFlightAmrCodes);
+        var taskList = activeTasks.ToList();
+
+        return DispatchFleetCatalog.ChargeVehicleCodes
+            .Select(code => EvaluateForCharge(
+                ResolveRobot(robotMap, code),
+                ResolveSimulation(simMap, code),
+                ResolveFleet(fleetMap, code),
+                code,
+                busy,
+                batteryThresholdPercent,
+                ResolveActiveTask(taskList, code)))
+            .ToList();
+    }
+
+    static int DefaultCapacityFor(string amrCode) =>
+        amrCode.StartsWith("BOBBIN", StringComparison.OrdinalIgnoreCase)
+            ? DefaultBobbinCapacity
+            : DefaultCakeCapacity;
+
+    static CakeVehicleDispatchStatus ChargeIneligible(
+        RobotStatusDto robot,
+        IReadOnlyList<CakePortDispatchStatus> ports,
+        int carryingCount,
+        bool dispatchEnabled,
+        string? siteCode,
+        int battery,
+        string reason) =>
+        new(
+            robot.RobotId,
+            robot.State,
+            robot.ConnectionStatus,
+            carryingCount,
+            robot.CarryingCapacity > 0 ? robot.CarryingCapacity : DefaultCapacityFor(robot.RobotId),
+            siteCode,
+            false,
+            dispatchEnabled,
+            false,
+            reason,
+            ports,
+            BatteryPercent: battery);
+
     static string? ResolveVehicleSiteCode(
         FleetStatusDto? fleet,
         SimulationAmrDto? simulation,
@@ -742,6 +863,63 @@ public static class CakeVehicleDispatchEvaluator
                 return amr;
         }
         return null;
+    }
+
+    /// <summary>
+    /// 作業派車門禁：電量低於充電門檻且空車 → 不可再派（應改充電）；
+    /// 仍有料件則繼續可派，直到卸空。已派出的 in-flight 不受影響。
+    /// </summary>
+    public static IReadOnlyList<CakeVehicleDispatchStatus> ApplyLowBatteryEmptyWorkGate(
+        IReadOnlyList<CakeVehicleDispatchStatus> vehicles,
+        IEnumerable<RobotStatusDto> robots,
+        int batteryThresholdPercent)
+    {
+        var threshold = Math.Clamp(batteryThresholdPercent, 1, 100);
+        var robotMap = BuildRobotMap(robots);
+        var result = new List<CakeVehicleDispatchStatus>(vehicles.Count);
+
+        foreach (var vehicle in vehicles)
+        {
+            var robot = ResolveRobot(robotMap, vehicle.AmrCode);
+            var battery = robot?.Battery ?? vehicle.BatteryPercent;
+            var stamped = vehicle.BatteryPercent == battery
+                ? vehicle
+                : vehicle with { BatteryPercent = battery };
+
+            if (!stamped.IsEligible)
+            {
+                result.Add(stamped);
+                continue;
+            }
+
+            if (battery >= threshold)
+            {
+                result.Add(stamped);
+                continue;
+            }
+
+            if (!IsVehicleEmpty(stamped))
+            {
+                result.Add(stamped);
+                continue;
+            }
+
+            result.Add(stamped with
+            {
+                IsEligible = false,
+                Reason = $"電量 {battery}% ＜ 門檻 {threshold}% 且空車，應改充電（完成進行中任務後不再派作業）"
+            });
+        }
+
+        return result;
+    }
+
+    public static bool IsVehicleEmpty(CakeVehicleDispatchStatus vehicle)
+    {
+        if (vehicle.CarryingCount > 0) return false;
+        var capacity = vehicle.CarryingCapacity > 0 ? vehicle.CarryingCapacity : vehicle.Ports.Count;
+        if (capacity <= 0 || vehicle.Ports.Count < capacity) return false;
+        return vehicle.Ports.Take(capacity).All(p => p.RawValue == 0);
     }
 
     /// <summary>CAKE-01 / Cake-01 / cake01 等格式互通。</summary>

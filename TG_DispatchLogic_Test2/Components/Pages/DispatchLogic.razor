@@ -114,6 +114,8 @@
                 @onclick='() => Session.SetMainTab("clearing-load")'>清軸上料派Cake車</button>
         <button type="button" class="equip-tab-btn @(Session.MainTab == "aoi-load" ? "active" : "")"
                 @onclick='() => Session.SetMainTab("aoi-load")'>AOI上料派Bobbin車</button>
+        <button type="button" class="equip-tab-btn @(Session.MainTab == "charge" ? "active" : "")"
+                @onclick='() => Session.SetMainTab("charge")'>充電派車</button>
     </div>
 
     @if (Session.MainTab == "buffer")
@@ -138,7 +140,7 @@
         </div>
 
         <div class="equip-panel-hint">
-            Buffer：作業面 12 Port 皆有料 · 停車點無車停靠 · Cake 車：idle、無任務、12 Port 全空 · 配對優先等待區（WP）車輛 · 派車後 Buffer 鎖定至任務完成
+            Buffer：作業面 12 Port 皆有料 · 停車點無車停靠 · Cake 車：idle、無任務、12 Port 全空 · 配對優先等待區（WP）車輛 · 電量＜充電門檻且空車則改充電、不再進配對 · 派車後 Buffer 鎖定至任務完成
         </div>
 
         @if (Session.Snapshot is null)
@@ -258,7 +260,7 @@
         </div>
 
         <div class="equip-panel-hint">
-            撚紗機：狀態=叫車、尾端 3 停車點 × 4 Cake Port 待上料 · 優先序：機台 → 左右走道（可同時派尾端組）→ 走道內尾端往前 · 後組須前組車輛實際開進 TWP 走道（fleet current_site）· 同機同側最多 @TwistingParkingRegistry.MaxConcurrentMissionsPerSide 車
+            撚紗機：狀態=叫車、尾端 3 停車點 × 4 Cake Port 待上料 · 優先序：機台 → 左右走道（可同時派尾端組）→ 走道內尾端往前 · 後組須前組車輛實際開進 TWP 走道（fleet current_site）· 同機同側最多 @TwistingParkingRegistry.MaxConcurrentMissionsPerSide 車 · 電量＜充電門檻且空車則改充電
         </div>
 
         @if (Session.Snapshot is null)
@@ -373,7 +375,7 @@
         </div>
 
         <div class="equip-panel-hint">
-            狀態=請下料、尾端3停車點×4 Cake Port 皆無絲(1)、空車 CAKE-13~24、actionid=1、3次flow
+            狀態=請下料、尾端3停車點×4 Cake Port 皆無絲(1)、空車 CAKE-13~24、actionid=1、3次flow · 電量＜充電門檻且空車則改充電
         </div>
 
         @if (Session.Snapshot is null)
@@ -491,7 +493,7 @@
 
         <div class="equip-panel-hint">
             狀態=請下料、尾端6停車點×4 Bobbin Port 皆有絲(2)、空車 BOBBIN-01~08、actionid=1、artifact=bobbin_mission；
-            殘餘 A3+B3 跨側為第 7 趟（兩邊 lane 都綠燈才派）
+            殘餘 A3+B3 跨側為第 7 趟（兩邊 lane 都綠燈才派）· 電量＜充電門檻且空車則改充電
         </div>
 
         @if (Session.Snapshot is null)
@@ -610,7 +612,7 @@
         </div>
 
         <div class="equip-panel-hint">
-            清軸：CLR001~005 停車點空 + 單行道可達（外側無車）· 忽略 Modbus · Cake 車 CAKE-13~24：idle、無任務、12 Port 皆無絲(1) · 一次 12 Port actionid=2 · 派車後鎖定至任務完成
+            清軸：CLR001~005 停車點空 + 單行道可達（外側無車）· 忽略 Modbus · Cake 車 CAKE-13~24：idle、無任務、12 Port 皆無絲(1) · 電量＜充電門檻且空車則改充電 · 一次 12 Port actionid=2
         </div>
 
         <div class="dispatch-summary @(Session.ClrAvailableStationCount > 0 ? "has-ready" : "")">
@@ -715,7 +717,7 @@
         </div>
 
         <div class="equip-panel-hint">
-            AOI：PKP001~002 未鎖即可（不擋停車點有人）· 忽略 Modbus · 兩站可同時派 · Bobbin 車 BOBBIN-01~08：idle、無任務、24 Port 皆有絲(2) · 多台可派時優先率先達成條件者 · actionid=2 · bobbin_mission · 派車後鎖定至任務完成
+            AOI：PKP001~002 未鎖即可（不擋停車點有人）· 忽略 Modbus · 兩站可同時派 · Bobbin 車 BOBBIN-01~08：idle、無任務、24 Port 皆有絲(2) · 多台可派時優先率先達成條件者 · 電量＜充電門檻且空車則改充電、不再進配對 · actionid=2 · bobbin_mission
         </div>
 
         <div class="dispatch-summary @(Session.AoiAvailableStationCount > 0 ? "has-ready" : "")">
@@ -794,6 +796,129 @@
             </section>
         }
     }
+    else if (Session.MainTab == "charge")
+    {
+        <div class="dispatch-mode-bar">
+            <span class="equip-panel-hint mb-0">派車模式</span>
+            <button type="button" class="equip-tab-btn small @(Session.ChargeDispatchMode == "manual" ? "active" : "")"
+                    @onclick="Session.SetChargeDispatchModeManual">手動（先預覽 JSON）</button>
+            <button type="button" class="equip-tab-btn small @(Session.ChargeDispatchMode == "auto" ? "active" : "")"
+                    @onclick="Session.SetChargeDispatchModeAuto">自動派車</button>
+            @if (Session.ChargeDispatchMode == "manual")
+            {
+                <span class="api-test-hint">檢查 JSON 後按各組「派車」（charge_mission）</span>
+            }
+            else
+            {
+                <span class="api-test-hint">符合配對條件時自動派車 · 每 @DispatchLogicSessionService.TwpAutoDispatchIntervalSeconds 秒最多派 1 組</span>
+            }
+            <DispatchStatusResetBar InFlightCount="Session.ChargeActiveInFlightCount"
+                                    LogCount="Session.ChargeDispatchLogs.Count"
+                                    OnReset="Session.ResetChargeDispatchStateAsync" />
+        </div>
+
+        <div class="dispatch-mode-bar">
+            <span class="equip-panel-hint mb-0">電量門檻（低於此％：充電可派／作業空車停派）</span>
+            <input type="number" class="form-control form-control-sm"
+                   style="width:5rem"
+                   min="1" max="100"
+                   value="@Session.ChargeBatteryThresholdPercent"
+                   @onchange="OnChargeThresholdChanged" />
+            <span class="equip-panel-hint mb-0">%</span>
+            <span class="equip-panel-hint mb-0 ms-3">充到目標</span>
+            <input type="number" class="form-control form-control-sm"
+                   style="width:5rem"
+                   min="1" max="100"
+                   value="@Session.ChargeTargetPercent"
+                   @onchange="OnChargeTargetChanged" />
+            <span class="equip-panel-hint mb-0">%</span>
+            <span class="api-test-hint">percentage_amr</span>
+        </div>
+
+        <div class="equip-panel-hint">
+            充電：WMS Charge 空站或停靠車 Idle（可趕走）+ 未鎖 · 車須 idle／空車／電量＜門檻 · 若尚有作業或充電 in-flight 則不可派 · 充完 idle 無任務即解鎖 · charge_mission
+        </div>
+
+        <div class="dispatch-summary @(Session.ChargeAvailableStationCount > 0 ? "has-ready" : "")">
+            <strong>充電站可派：@Session.ChargeAvailableStationCount</strong>
+            <span>· 可派車：@(Session.ChargeVehicles.Count(v => v.IsEligible && !Session.IsAmrBusy(v.AmrCode)))</span>
+            <span>· 配對：@(Session.ChargePairings?.Count ?? 0) 組</span>
+            @if (Session.ChargeActiveInFlightCount > 0)
+            {
+                <span>· 任務中：@Session.ChargeActiveInFlightCount</span>
+            }
+        </div>
+
+        @if (Session.ChargePairings is { Count: > 0 })
+        {
+            <section class="dispatch-section">
+                <h3 class="dispatch-section-title">配對與派車（charge_mission · percentage_amr）</h3>
+                <div class="dispatch-pair-grid">
+                    @foreach (var pair in Session.ChargePairings)
+                    {
+                        <DispatchChargePairCard Pair="pair"
+                                                DispatchMode="@Session.ChargeDispatchMode"
+                                                DispatchBusy="@Session.ChargeDispatchBusy"
+                                                OnDispatch="Session.DispatchChargePairManualAsync" />
+                    }
+                </div>
+            </section>
+        }
+        else if (Session.ChargeDispatchableStationCount > 0 && Session.ChargeActiveInFlightCount == 0)
+        {
+            <p class="api-test-hint">有充電站可派車，但目前沒有符合條件的空車／低電量車可配對。</p>
+        }
+        else if (Session.ChargeDispatchableStationCount == 0 && Session.ChargeActiveInFlightCount == 0)
+        {
+            <p class="api-test-hint">目前無符合條件的充電站或配對。</p>
+        }
+
+        <DispatchChargeInFlightPanel Tasks="Session.ChargeActiveInFlightTasks" />
+        <DispatchBufferLogPanel Logs="Session.ChargeDispatchLogs" />
+
+        <section class="dispatch-section dispatch-detail-section">
+            <h3 class="dispatch-section-title">
+                車隊明細（CAKE-01~24 · BOBBIN-01~08）
+                <span class="parking-cat-muted small">空車 + 電量＜@Session.ChargeBatteryThresholdPercent% · GET /v2/robots/status</span>
+            </h3>
+            @if (Session.AmrError is not null)
+            {
+                <p class="text-danger small dispatch-tgi-hint">@Session.AmrError</p>
+            }
+            else if (Session.LastAmrRefresh is not null)
+            {
+                <p class="api-test-hint small dispatch-tgi-hint">
+                    TGI 最後更新 @Session.LastAmrRefresh.Value.ToString("HH:mm:ss") · API 回報 @Session.TgiRobotReportCount 台
+                </p>
+            }
+            <div class="dispatch-buffer-grid">
+                @foreach (var v in Session.ChargeVehicles)
+                {
+                    <DispatchCakeVehicleView Vehicle="v" ShowBattery="true" />
+                }
+            </div>
+        </section>
+
+        @if (Session.ChargeStationEvaluations is { Count: > 0 })
+        {
+            <section class="dispatch-section dispatch-detail-section">
+                <h3 class="dispatch-section-title">充電站明細（GET /v2/wms · Charge）</h3>
+                <div class="dispatch-buffer-grid">
+                    @foreach (var eval in Session.ChargeStationEvaluations)
+                    {
+                        var inFlight = Session.ChargeInFlightDispatches.FirstOrDefault(f =>
+                            f.IsActive &&
+                            f.ParkingPointId.Equals(eval.CellId, StringComparison.OrdinalIgnoreCase));
+                        <DispatchChargeStationView Evaluation="eval" InFlight="inFlight" />
+                    }
+                </div>
+            </section>
+        }
+        else
+        {
+            <p class="api-test-hint">尚未取得充電站清單（確認 TGI GET /v2/wms 有 cell_type=Charge）。</p>
+        }
+    }
 </div>
 
 @code {
@@ -810,6 +935,18 @@
     void OnSessionStateChanged() => InvokeAsync(StateHasChanged);
 
     void OnSettingsChanged() => Session.NotifySettingsChanged();
+
+    void OnChargeThresholdChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var v))
+            Session.SetChargeBatteryThresholdPercent(v);
+    }
+
+    void OnChargeTargetChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var v))
+            Session.SetChargeTargetPercent(v);
+    }
 
     Task RefreshNowAsync() => Session.RefreshNowAsync();
 

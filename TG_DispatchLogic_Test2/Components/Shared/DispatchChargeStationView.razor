@@ -1,0 +1,55 @@
+@using TG_DispatchLogic_Test2.Models
+
+<div class="parking-cat-card parking-cat-buffer dispatch-buffer-ref-card @CardClass @(_expanded ? "is-expanded" : "")">
+    <button type="button" class="dispatch-ref-toggle" @onclick="Toggle">
+        <div class="dispatch-ref-toggle-main">
+            <div class="dispatch-ref-title-row">
+                <strong>@Evaluation.CellName</strong>
+                <span class="equip-badge equip-badge-info">@Evaluation.CellId</span>
+                <span class="dispatch-status-badge @StatusBadgeClass">@StatusBadgeText</span>
+            </div>
+            <div class="parking-cat-muted small dispatch-ref-toggle-summary">
+                @Evaluation.Reason
+                @if (InFlight is { IsActive: true })
+                {
+                    <text> · @InFlight.AmrCode · @InFlight.StatusHint</text>
+                }
+            </div>
+        </div>
+        <span class="dispatch-ref-chevron">@(_expanded ? "▲ 收合" : "▼ 展開")</span>
+    </button>
+
+    @if (_expanded)
+    {
+        <div class="parking-cat-card-body dispatch-ref-body">
+            <div class="parking-cat-muted small mono dispatch-ref-meta">
+                GET /v2/wms · Charge · 空站或停靠車 Idle（可趕走）+ 未鎖可派
+            </div>
+            <div class="parking-cat-muted small">
+                空位：@(Evaluation.IsEmpty ? "是" : $"否（{Evaluation.OccupyingAmrCode}）") ·
+                鎖定：@(Evaluation.IsLocked ? "是" : "否")
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ChargeStationEvaluation Evaluation { get; set; } = default!;
+    [Parameter] public ChargeDispatchInFlight? InFlight { get; set; }
+
+    bool _expanded;
+
+    void Toggle() => _expanded = !_expanded;
+
+    string CardClass => Evaluation.IsDispatchable
+        ? "dispatch-cake-ref-card--ready"
+        : InFlight is { IsActive: true } ? "" : "";
+
+    string StatusBadgeClass => Evaluation.IsDispatchable
+        ? "ok"
+        : InFlight is { IsActive: true } ? "busy" : "warn";
+
+    string StatusBadgeText => Evaluation.IsDispatchable
+        ? "可派車"
+        : InFlight is { IsActive: true } ? "任務中" : "不可派";
+}

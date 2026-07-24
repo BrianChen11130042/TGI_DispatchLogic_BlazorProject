@@ -1,0 +1,54 @@
+@rendermode InteractiveServer
+@using TG_DispatchLogic_Test2.Models
+@using TG_DispatchLogic_Test2.Services
+
+<div class="dispatch-pair-card">
+    <div class="dispatch-pair-head">
+        <span class="equip-badge equip-badge-info">@Pair.Station.CellId</span>
+        <span class="dispatch-pair-arrow">→</span>
+        <span class="equip-badge equip-badge-call">@Pair.Vehicle.AmrCode</span>
+        <span class="dispatch-pair-meta parking-cat-muted small">
+            電量 @Pair.Vehicle.BatteryPercent% · 目標 @Pair.TargetPercent%
+        </span>
+        @if (DispatchMode == "manual")
+        {
+            <button type="button"
+                    class="dispatch-send-btn"
+                    disabled="@DispatchBusy"
+                    @onclick="DispatchAsync">
+                派車
+            </button>
+        }
+        else
+        {
+            <span class="dispatch-auto-badge">自動派車</span>
+        }
+    </div>
+
+    <div class="dispatch-json-block mb-0">
+        <div class="dispatch-json-title">POST /v2/flows/@Pair.FlowName</div>
+        <div class="dispatch-pair-meta parking-cat-muted small mb-1">
+            goal_amr：@GoalAmr · assigned_robot：@AssignedRobot · percentage_amr：@Pair.TargetPercent
+        </div>
+        <pre class="dispatch-json-pre">@Pair.JsonBody</pre>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ChargeDispatchPair Pair { get; set; } = default!;
+    [Parameter] public string DispatchMode { get; set; } = "manual";
+    [Parameter] public bool DispatchBusy { get; set; }
+    [Parameter] public EventCallback<ChargeDispatchPair> OnDispatch { get; set; }
+
+    async Task DispatchAsync() => await OnDispatch.InvokeAsync(Pair);
+
+    string GoalAmr =>
+        Pair.FlowRequest.Args.Params
+            .GetValueOrDefault(ChargeFlowDispatchBuilder.NodeId)?
+            .GetValueOrDefault("goal_amr") ?? "—";
+
+    string AssignedRobot =>
+        Pair.FlowRequest.Args.Params
+            .GetValueOrDefault(ChargeFlowDispatchBuilder.NodeId)?
+            .GetValueOrDefault("assigned_robot") ?? Pair.Vehicle.AmrCode;
+}

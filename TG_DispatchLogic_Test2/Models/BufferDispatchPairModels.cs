@@ -12,7 +12,8 @@ public record CakeVehicleDispatchStatus(
     bool IsEligible,
     string Reason,
     IReadOnlyList<CakePortDispatchStatus> Ports,
-    DateTime? EligibleSince = null);
+    DateTime? EligibleSince = null,
+    int BatteryPercent = 0);
 
 public record BufferDispatchPair(
     BufferDispatchEvaluation Buffer,

@@ -68,6 +68,12 @@ public sealed class DispatchLogicSessionService : IDisposable
     public bool ClrDispatchBusy { get; private set; }
     public string AoiDispatchMode { get; set; } = "manual";
     public bool AoiDispatchBusy { get; private set; }
+    public string ChargeDispatchMode { get; set; } = "manual";
+    public bool ChargeDispatchBusy { get; private set; }
+    /// <summary>電量低於此％才可派充電（畫面可調）。</summary>
+    public int ChargeBatteryThresholdPercent { get; set; } = 40;
+    /// <summary>percentage_amr：充到此％結束（畫面可調）。</summary>
+    public int ChargeTargetPercent { get; set; } = 98;
 
     public EquipSimLiveSnapshot? Snapshot { get; private set; }
     public IReadOnlyList<BufferDispatchEvaluation>? BufferEvaluations { get; private set; }
@@ -124,6 +130,16 @@ public sealed class DispatchLogicSessionService : IDisposable
     public List<BufferDispatchLogEntry> AoiDispatchLogs { get; } = [];
     public List<AoiLoadDispatchInFlight> AoiInFlightDispatches { get; } = [];
 
+    public IReadOnlyList<ChargeStationEvaluation>? ChargeStationEvaluations { get; private set; }
+    public IReadOnlyList<CakeVehicleDispatchStatus> ChargeVehicles { get; private set; } =
+        CakeVehicleDispatchEvaluator.BuildWaitingFleet(
+            "等待 TGI /v2/robots/status…",
+            DispatchFleetCatalog.ChargeVehicleCodes);
+    public IReadOnlyList<ChargeDispatchPair>? ChargePairings { get; private set; }
+    public List<BufferDispatchLogEntry> ChargeDispatchLogs { get; } = [];
+    public List<ChargeDispatchInFlight> ChargeInFlightDispatches { get; } = [];
+    public List<WmsCellDto> LastChargeCells { get; private set; } = [];
+
     public string? AmrError { get; private set; }
     public DateTime? LastAmrRefresh { get; private set; }
     public int TgiRobotReportCount { get; private set; }
@@ -134,6 +150,7 @@ public sealed class DispatchLogicSessionService : IDisposable
     DateTime? _lastTwpUnloadBobbinAutoFlowAt;
     DateTime? _lastClrAutoFlowAt;
     DateTime? _lastAoiAutoFlowAt;
+    DateTime? _lastChargeAutoFlowAt;
     readonly Dictionary<string, DateTime> _aoiEligibleSinceByAmr =
         new(StringComparer.OrdinalIgnoreCase);
     string? _token;
@@ -214,6 +231,20 @@ public sealed class DispatchLogicSessionService : IDisposable
 
     IEnumerable<AoiLoadDispatchEvaluation> DispatchableAoiStations =>
         AoiStationEvaluations?.Where(e => e.IsDispatchable) ?? [];
+
+    public int ChargeDispatchableStationCount => ChargeStationEvaluations?.Count(e => e.IsDispatchable) ?? 0;
+
+    public int ChargeAvailableStationCount =>
+        DispatchableChargeStations.Count(s =>
+            !ChargeDispatchTracker.IsStationLocked(ChargeInFlightDispatches, s.CellId));
+
+    public int ChargeActiveInFlightCount => ChargeInFlightDispatches.Count(f => f.IsActive);
+
+    public IReadOnlyList<ChargeDispatchInFlight> ChargeActiveInFlightTasks =>
+        ChargeInFlightDispatches.Where(f => f.IsActive).ToList();
+
+    IEnumerable<ChargeStationEvaluation> DispatchableChargeStations =>
+        ChargeStationEvaluations?.Where(e => e.IsDispatchable) ?? [];
 
     public void EnsurePollingStarted()
     {
@@ -303,6 +334,74 @@ public sealed class DispatchLogicSessionService : IDisposable
     public void SetAoiDispatchModeAuto()
     {
         AoiDispatchMode = "auto";
+        NotifyChanged();
+    }
+
+    public void SetChargeDispatchModeManual()
+    {
+        ChargeDispatchMode = "manual";
+        NotifyChanged();
+    }
+
+    public void SetChargeDispatchModeAuto()
+    {
+        ChargeDispatchMode = "auto";
+        NotifyChanged();
+    }
+
+    public void SetChargeBatteryThresholdPercent(int value)
+    {
+        ChargeBatteryThresholdPercent = Math.Clamp(value, 1, 100);
+        if (LastRobots.Count > 0)
+            RefreshVehicleEligibilityFromCache();
+        RecomputePairings();
+        RecomputeTwistingPairings();
+        RecomputeTwistingUnloadPairings();
+        RecomputeTwistingUnloadBobbinPairings();
+        RecomputeClearingLoadPairings();
+        RecomputeAoiLoadPairings();
+        RecomputeChargePairings();
+        NotifyChanged();
+    }
+
+    /// <summary>門檻變更時，用快取的 TGI 狀態重算各分頁車隊可派（含低電量空車門禁）。</summary>
+    void RefreshVehicleEligibilityFromCache()
+    {
+        var busy = GetBusyAmrCodes();
+        CakeVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+            CakeVehicleDispatchEvaluator.EvaluateFleet(
+                LastRobots, null, [], LastFleetStatuses, [], busy),
+            LastRobots, ChargeBatteryThresholdPercent);
+        TwpCakeVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+            CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingLoad(
+                LastRobots, null, [], LastFleetStatuses, busy),
+            LastRobots, ChargeBatteryThresholdPercent);
+        TwpUnloadCakeVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+            CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingUnload(
+                LastRobots, null, [], LastFleetStatuses, busy),
+            LastRobots, ChargeBatteryThresholdPercent);
+        TwpUnloadBobbinVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+            CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingUnloadBobbin(
+                LastRobots, null, [], LastFleetStatuses, busy),
+            LastRobots, ChargeBatteryThresholdPercent);
+        ClrCakeVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+            CakeVehicleDispatchEvaluator.EvaluateFleetForClearingLoad(
+                LastRobots, null, [], LastFleetStatuses, busy),
+            LastRobots, ChargeBatteryThresholdPercent);
+        AoiBobbinVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+            AoiLoadEligibleSinceTracker.Apply(
+                CakeVehicleDispatchEvaluator.EvaluateFleetForAoiLoad(
+                    LastRobots, null, [], LastFleetStatuses, busy),
+                _aoiEligibleSinceByAmr),
+            LastRobots, ChargeBatteryThresholdPercent);
+        ChargeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForCharge(
+            LastRobots, null, [], ChargeBatteryThresholdPercent, LastFleetStatuses, busy);
+    }
+
+    public void SetChargeTargetPercent(int value)
+    {
+        ChargeTargetPercent = Math.Clamp(value, 1, 100);
+        RecomputeChargePairings();
         NotifyChanged();
     }
 
@@ -506,6 +605,17 @@ public sealed class DispatchLogicSessionService : IDisposable
         _lastAoiAutoFlowAt = null;
         RecomputeAoiLoadEvaluations();
         RecomputeAoiLoadPairings();
+        NotifyChanged();
+        return Task.CompletedTask;
+    }
+
+    public Task ResetChargeDispatchStateAsync()
+    {
+        ChargeInFlightDispatches.Clear();
+        ChargeDispatchLogs.Clear();
+        _lastChargeAutoFlowAt = null;
+        RecomputeChargeEvaluations();
+        RecomputeChargePairings();
         NotifyChanged();
         return Task.CompletedTask;
     }
@@ -719,6 +829,51 @@ public sealed class DispatchLogicSessionService : IDisposable
         }
     }
 
+    public async Task DispatchChargePairManualAsync(ChargeDispatchPair pair)
+    {
+        if (!await EnsureTokenAsync()) return;
+        if (IsAmrBusy(pair.Vehicle.AmrCode))
+        {
+            ChargeDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+                DateTime.Now, pair.Station.CellId, pair.Vehicle.AmrCode, false,
+                "暫不可派車：此車尚有進行中任務（作業／充電 in-flight），完成後才可派充電", null, null));
+            NotifyChanged();
+            return;
+        }
+
+        if (ChargeDispatchTracker.IsStationLocked(ChargeInFlightDispatches, pair.Station.CellId))
+        {
+            ChargeDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+                DateTime.Now, pair.Station.CellId, pair.Vehicle.AmrCode, false,
+                $"暫不可派車：{pair.Station.CellId} 充電任務中鎖定", null, null));
+            NotifyChanged();
+            return;
+        }
+
+        if (ChargeDispatchTracker.IsAmrInFlight(ChargeInFlightDispatches, pair.Vehicle.AmrCode))
+        {
+            ChargeDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+                DateTime.Now, pair.Station.CellId, pair.Vehicle.AmrCode, false,
+                "暫不可派車：此車已有充電 in-flight", null, null));
+            NotifyChanged();
+            return;
+        }
+
+        ChargeDispatchBusy = true;
+        NotifyChanged();
+        try
+        {
+            var result = await _amrApi.TriggerFlowDiagnosticAsync(
+                _token!, pair.FlowName, pair.FlowRequest, _pollCts?.Token ?? default);
+            HandleChargeDispatchResult(pair, result);
+        }
+        finally
+        {
+            ChargeDispatchBusy = false;
+            NotifyChanged();
+        }
+    }
+
     void NotifyChanged() => StateChanged?.Invoke();
 
     int CountAvailableTwpMissionBlocks()
@@ -871,6 +1026,8 @@ public sealed class DispatchLogicSessionService : IDisposable
             codes.Add(f.AmrCode);
         foreach (var f in AoiInFlightDispatches.Where(f => f.IsActive))
             codes.Add(f.AmrCode);
+        foreach (var f in ChargeInFlightDispatches.Where(f => f.IsActive))
+            codes.Add(f.AmrCode);
         return CakeVehicleDispatchEvaluator.BuildBusyAmrSet(inFlightAmrCodes: codes);
     }
 
@@ -920,14 +1077,17 @@ public sealed class DispatchLogicSessionService : IDisposable
                 RefreshTwistingUnloadBobbinInFlightStatus();
                 RefreshClearingLoadInFlightStatus();
                 RefreshAoiLoadInFlightStatus();
+                RefreshChargeInFlightStatus();
                 RecomputeClearingLoadEvaluations();
                 RecomputeAoiLoadEvaluations();
+                RecomputeChargeEvaluations();
                 RecomputePairings();
                 RecomputeTwistingPairings();
                 RecomputeTwistingUnloadPairings();
                 RecomputeTwistingUnloadBobbinPairings();
                 RecomputeClearingLoadPairings();
                 RecomputeAoiLoadPairings();
+                RecomputeChargePairings();
             }
 
             NotifyChanged();
@@ -963,7 +1123,8 @@ public sealed class DispatchLogicSessionService : IDisposable
             && TwpUnloadDispatchMode != "auto"
             && TwpUnloadBobbinDispatchMode != "auto"
             && ClrDispatchMode != "auto"
-            && AoiDispatchMode != "auto")
+            && AoiDispatchMode != "auto"
+            && ChargeDispatchMode != "auto")
             return;
 
         if (Interlocked.CompareExchange(ref _autoDispatchRunning, 1, 0) != 0)
@@ -993,6 +1154,9 @@ public sealed class DispatchLogicSessionService : IDisposable
 
             if (AoiDispatchMode == "auto")
                 await TryAoiAutoDispatchAsync();
+
+            if (ChargeDispatchMode == "auto")
+                await TryChargeAutoDispatchAsync();
 
             NotifyChanged();
         }
@@ -1088,6 +1252,23 @@ public sealed class DispatchLogicSessionService : IDisposable
             .ToList();
         var busy = GetBusyAmrCodes();
         AoiPairings = AoiLoadPairingService.Pair(stations, AoiBobbinVehicles, busy);
+    }
+
+    void RecomputeChargeEvaluations()
+    {
+        ChargeStationEvaluations = ChargeDispatchEvaluator.EvaluateAll(
+            LastChargeCells, LastFleetStatuses, LastRobots, ChargeInFlightDispatches);
+    }
+
+    void RecomputeChargePairings()
+    {
+        if (ChargeStationEvaluations is null) return;
+        var stations = DispatchableChargeStations
+            .Where(s => !ChargeDispatchTracker.IsStationLocked(ChargeInFlightDispatches, s.CellId))
+            .ToList();
+        var busy = GetBusyAmrCodes();
+        ChargePairings = ChargePairingService.Pair(
+            stations, ChargeVehicles, ChargeTargetPercent, busy);
     }
 
     void RefreshInFlightStatus()
@@ -1211,6 +1392,24 @@ public sealed class DispatchLogicSessionService : IDisposable
         AoiInFlightDispatches.AddRange(AoiLoadDispatchTracker.PruneCompleted(updated));
     }
 
+    void RefreshChargeInFlightStatus()
+    {
+        var previous = ChargeInFlightDispatches.ToList();
+        var updated = ChargeDispatchTracker.Refresh(ChargeInFlightDispatches, LastRobots);
+
+        foreach (var done in updated.Where(f => f.IsCompleted))
+        {
+            var wasActive = previous.Any(p =>
+                p.IsActive &&
+                p.TaskId.Equals(done.TaskId, StringComparison.OrdinalIgnoreCase));
+            if (wasActive)
+                AppendChargeCompletionLog(done);
+        }
+
+        ChargeInFlightDispatches.Clear();
+        ChargeInFlightDispatches.AddRange(ChargeDispatchTracker.PruneCompleted(updated));
+    }
+
     void AppendCompletionLog(BufferDispatchInFlight flight)
     {
         DispatchLogs.Insert(0, new BufferDispatchLogEntry(
@@ -1253,6 +1452,13 @@ public sealed class DispatchLogicSessionService : IDisposable
             $"任務完成：{flight.StatusHint}", null, null));
     }
 
+    void AppendChargeCompletionLog(ChargeDispatchInFlight flight)
+    {
+        ChargeDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+            DateTime.Now, flight.ParkingPointId, flight.AmrCode, true,
+            $"任務完成：{flight.StatusHint}", null, null));
+    }
+
     async Task RefreshAmrAndPairAsync()
     {
         if (!await EnsureTokenAsync()) return;
@@ -1273,6 +1479,7 @@ public sealed class DispatchLogicSessionService : IDisposable
             var simResult = await _amrApi.PollSimulationAmrsAsync(_token!, ct);
             var fleetResult = await _amrApi.PollFleetStatusAsync(_token!, ct);
             var wpResult = await _amrApi.GetWaitPointStatusAsync(_token!, ct);
+            var chargeResult = await _amrApi.GetChargeStationStatusAsync(_token!, ct);
 
             var activeTasks = taskResult.Success ? taskResult.Data : [];
             var simulationAmrs = simResult.Success ? simResult.Data : null;
@@ -1282,6 +1489,8 @@ public sealed class DispatchLogicSessionService : IDisposable
             var fleetStatuses = fleetResult.Success ? fleetResult.Data : null;
             if (fleetStatuses is not null)
                 LastFleetStatuses = fleetStatuses;
+            if (chargeResult.Success)
+                LastChargeCells = chargeResult.Data ?? [];
 
             TgiRobotReportCount = robotResult.Data.Count;
             LastRobots = robotResult.Data;
@@ -1291,27 +1500,44 @@ public sealed class DispatchLogicSessionService : IDisposable
             RefreshTwistingUnloadBobbinInFlightStatus();
             RefreshClearingLoadInFlightStatus();
             RefreshAoiLoadInFlightStatus();
+            RefreshChargeInFlightStatus();
 
             var inFlightAmrCodes = InFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode)
                 .Concat(TwpInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode))
                 .Concat(TwpUnloadInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode))
                 .Concat(TwpUnloadBobbinInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode))
                 .Concat(ClrInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode))
-                .Concat(AoiInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode));
-            CakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleet(
-                robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, waitPoints, inFlightAmrCodes);
-            TwpCakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingLoad(
-                robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
-            TwpUnloadCakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingUnload(
-                robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
-            TwpUnloadBobbinVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingUnloadBobbin(
-                robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
-            ClrCakeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForClearingLoad(
-                robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes);
-            AoiBobbinVehicles = AoiLoadEligibleSinceTracker.Apply(
-                CakeVehicleDispatchEvaluator.EvaluateFleetForAoiLoad(
+                .Concat(AoiInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode))
+                .Concat(ChargeInFlightDispatches.Where(f => f.IsActive).Select(f => f.AmrCode));
+            CakeVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+                CakeVehicleDispatchEvaluator.EvaluateFleet(
+                    robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, waitPoints, inFlightAmrCodes),
+                robotResult.Data, ChargeBatteryThresholdPercent);
+            TwpCakeVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+                CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingLoad(
                     robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes),
-                _aoiEligibleSinceByAmr);
+                robotResult.Data, ChargeBatteryThresholdPercent);
+            TwpUnloadCakeVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+                CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingUnload(
+                    robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes),
+                robotResult.Data, ChargeBatteryThresholdPercent);
+            TwpUnloadBobbinVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+                CakeVehicleDispatchEvaluator.EvaluateFleetForTwistingUnloadBobbin(
+                    robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes),
+                robotResult.Data, ChargeBatteryThresholdPercent);
+            ClrCakeVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+                CakeVehicleDispatchEvaluator.EvaluateFleetForClearingLoad(
+                    robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes),
+                robotResult.Data, ChargeBatteryThresholdPercent);
+            AoiBobbinVehicles = CakeVehicleDispatchEvaluator.ApplyLowBatteryEmptyWorkGate(
+                AoiLoadEligibleSinceTracker.Apply(
+                    CakeVehicleDispatchEvaluator.EvaluateFleetForAoiLoad(
+                        robotResult.Data, simulationAmrs, activeTasks, fleetStatuses, inFlightAmrCodes),
+                    _aoiEligibleSinceByAmr),
+                robotResult.Data, ChargeBatteryThresholdPercent);
+            ChargeVehicles = CakeVehicleDispatchEvaluator.EvaluateFleetForCharge(
+                robotResult.Data, simulationAmrs, activeTasks, ChargeBatteryThresholdPercent,
+                fleetStatuses, inFlightAmrCodes);
 
             AmrError = null;
             LastAmrRefresh = DateTime.Now;
@@ -1323,12 +1549,14 @@ public sealed class DispatchLogicSessionService : IDisposable
             }
             RecomputeClearingLoadEvaluations();
             RecomputeAoiLoadEvaluations();
+            RecomputeChargeEvaluations();
             RecomputePairings();
             RecomputeTwistingPairings();
             RecomputeTwistingUnloadPairings();
             RecomputeTwistingUnloadBobbinPairings();
             RecomputeClearingLoadPairings();
             RecomputeAoiLoadPairings();
+            RecomputeChargePairings();
         }
         catch (Exception ex)
         {
@@ -1795,6 +2023,32 @@ public sealed class DispatchLogicSessionService : IDisposable
         }
     }
 
+    async Task TryChargeAutoDispatchAsync()
+    {
+        if (ChargePairings is null || ChargePairings.Count == 0 || ChargeDispatchBusy || string.IsNullOrEmpty(_token))
+            return;
+        if (!IsTwpAutoDispatchElapsed(_lastChargeAutoFlowAt)) return;
+
+        ChargeDispatchBusy = true;
+        try
+        {
+            var pair = ChargePairings.FirstOrDefault(p =>
+                !IsAmrBusy(p.Vehicle.AmrCode)
+                && !ChargeDispatchTracker.IsStationLocked(ChargeInFlightDispatches, p.Station.CellId)
+                && !ChargeDispatchTracker.IsAmrInFlight(ChargeInFlightDispatches, p.Vehicle.AmrCode));
+            if (pair is null) return;
+
+            var result = await _amrApi.TriggerFlowDiagnosticAsync(
+                _token!, pair.FlowName, pair.FlowRequest, _pollCts?.Token ?? default);
+            _lastChargeAutoFlowAt = DateTime.Now;
+            HandleChargeDispatchResult(pair, result);
+        }
+        finally
+        {
+            ChargeDispatchBusy = false;
+        }
+    }
+
     async Task DispatchTwpPairCoreAsync(TwistingLoadDispatchPair pair)
     {
         if (string.IsNullOrEmpty(_token)) return;
@@ -2003,6 +2257,26 @@ public sealed class DispatchLogicSessionService : IDisposable
         RecomputeClearingLoadPairings();
     }
 
+    void HandleChargeDispatchResult(ChargeDispatchPair pair, ApiCallResult<TriggerFlowResultDto> result)
+    {
+        AppendChargeDispatchLog(pair, result);
+        if (!result.Success || result.Data is null) return;
+
+        var taskId = !string.IsNullOrWhiteSpace(result.Data.TaskId)
+            ? result.Data.TaskId
+            : result.Data.FlowId;
+        if (string.IsNullOrWhiteSpace(taskId)) return;
+
+        ChargeInFlightDispatches.Add(ChargeDispatchTracker.Register(
+            pair.Station.CellId,
+            pair.Vehicle.AmrCode,
+            taskId,
+            pair.TargetPercent));
+        RefreshChargeInFlightStatus();
+        RecomputeChargeEvaluations();
+        RecomputeChargePairings();
+    }
+
     void AppendDispatchLog(BufferDispatchPair pair, ApiCallResult result)
     {
         DispatchLogs.Insert(0, new BufferDispatchLogEntry(
@@ -2032,6 +2306,18 @@ public sealed class DispatchLogicSessionService : IDisposable
         AoiDispatchLogs.Insert(0, new BufferDispatchLogEntry(
             DateTime.Now,
             pair.Station.ParkingPointId,
+            pair.Vehicle.AmrCode,
+            result.Success,
+            result.Summary,
+            pair.JsonBody,
+            result.ResponseBody));
+    }
+
+    void AppendChargeDispatchLog(ChargeDispatchPair pair, ApiCallResult result)
+    {
+        ChargeDispatchLogs.Insert(0, new BufferDispatchLogEntry(
+            DateTime.Now,
+            pair.Station.CellId,
             pair.Vehicle.AmrCode,
             result.Success,
             result.Summary,
